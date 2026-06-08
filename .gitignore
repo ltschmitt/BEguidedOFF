@@ -1,0 +1,11 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+relevant_files/*
+*__pycache__*
+.pytest_cache/*
+*_otbe.npz
+results*
+*.egg-info/
+session-bulges.md
+project.md

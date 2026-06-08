@@ -1,0 +1,652 @@
+"""Main BEguidedOFF search engine."""
+import math
+import warnings
+from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+
+import logging
+
+import numpy as np
+import pandas as pd
+from pathlib import Path
+
+import torch
+
+from beguidedoff.types import GuideInput, OffTarget
+from beguidedoff.encoding import (
+    encode_dna,
+    encode_guide_64bit,
+    extract_window,
+    decode_dna,
+    hamming_distance_2bit,
+    mismatch_positions_2bit,
+    reverse_complement_seq,
+)
+from beguidedoff.pam import encode_pam_mask, pam_matches_at_position, group_guides_by_pam
+from beguidedoff.scoring import calculate_cfd_score, calculate_cctop_score
+from beguidedoff.base_editing import editable_base_in_window, get_trinucleotide_contexts
+from beguidedoff.io import (
+    load_guides_from_tsv,
+    offtargets_to_dataframe,
+)
+from beguidedoff.genome_converter import load_genome
+
+_LOGGER = logging.getLogger("beguidedoff")
+
+
+def _position_to_chrom(pos: int, chrom_offsets: np.ndarray, chrom_lengths: np.ndarray) -> tuple:
+    """Map a global position to (chrom_idx, local_pos).  local_pos is 0-based."""
+    idx = int(np.searchsorted(chrom_offsets, pos, side="right") - 1)
+    local = int(pos - chrom_offsets[idx])
+    return idx, local
+
+
+def _rc_pos_to_forward(
+    rc_pos: int,
+    pam_len: int,
+    chrom_offsets: np.ndarray,
+    chrom_lengths: np.ndarray,
+) -> int:
+    """Convert a position in the RC-packed genome to the corresponding
+    forward (0-based) genome coordinate.
+
+    For a 20-nt guide with a 3' PAM of length *pam_len* the search
+    window length is ``20 + pam_len``.  The hit at *rc_pos* in the
+    RC array maps to::
+
+        leftmost_fwd = chrom_offset + chrom_length - local_rc - (20 + pam_len)
+    """
+    idx = int(np.searchsorted(chrom_offsets, rc_pos, side="right") - 1)
+    local_rc = int(rc_pos - chrom_offsets[idx])
+    window = 20 + pam_len
+    local_fwd = int(chrom_lengths[idx] - local_rc - window)
+    return int(chrom_offsets[idx] + local_fwd)
+
+
+def _chrom_name_to_idx(chrom_name: str, chrom_names: np.ndarray) -> Optional[int]:
+    """Return index of chromosome name, or None if not found."""
+    for i, name in enumerate(chrom_names):
+        if str(name) == chrom_name:
+            return i
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Internal scan-guide representation (deduplicated)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class _ScanGuide:
+    """Deduped search key — one genome scan per unique (seq, pam)."""
+    guide_seq: str
+    pam: str
+    # Pre-computed on-target global position for 0-mm exclusion (0-based leftmost)
+    on_target_chrom_idx: Optional[int] = None
+    on_target_local_pos: Optional[int] = None
+    on_target_strand: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# CPU strand search
+# ---------------------------------------------------------------------------
+
+def _search_strand_cpu(
+    genome_packed: np.ndarray,
+    total_bp: int,
+    scan_guides: List[_ScanGuide],
+    pam_masks: dict,
+    strand: str,
+    max_mismatches: int,
+    chrom_offsets: np.ndarray,
+    chrom_lengths: np.ndarray,
+    chrom_names: np.ndarray,
+) -> dict:
+    """CPU search on one strand. Returns dict scan_key -> list of raw hits.
+
+    Each raw hit is a dict with keys: position (0-based global), n_mismatches,
+    offtarget_seq, pam_seq.  Chromosome, scoring, and on-target filtering are
+    done later.
+    """
+    results: dict = {sg: [] for sg in scan_guides}
+    guide_encoded = {sg: encode_guide_64bit(encode_dna(sg.guide_seq)) for sg in scan_guides}
+
+    pam_lens = {sg: len(sg.pam) for sg in scan_guides}
+
+    max_pam_len = max(pam_lens.values())
+    window_needed = 20 + max_pam_len
+
+    decode_map = {0: "A", 1: "C", 2: "G", 3: "T"}
+
+    for pos in range(0, total_bp - window_needed):
+        for sg in scan_guides:
+            pam_len = pam_lens[sg]
+            pam_start = pos + 20
+            guide_start = pos
+
+            if pam_start + pam_len > total_bp:
+                continue
+            if guide_start + 20 > total_bp:
+                continue
+
+            # PAM match
+            pam_mask = pam_masks[sg]
+            pam_ok = True
+            for i in range(pam_len):
+                gpos = pam_start + i
+                word_idx = gpos // 16
+                bit_offset = (gpos % 16) * 2
+                nuc_2bit = int((genome_packed[word_idx] >> bit_offset) & 0x3)
+                if not ((1 << nuc_2bit) & pam_mask[i]):
+                    pam_ok = False
+                    break
+            if not pam_ok:
+                continue
+
+            # Extract guide window
+            window = np.zeros(20, dtype=np.uint8)
+            for i in range(20):
+                gpos = guide_start + i
+                word_idx = gpos // 16
+                bit_offset = (gpos % 16) * 2
+                window[i] = int((genome_packed[word_idx] >> bit_offset) & 0x3)
+
+            window_val = encode_guide_64bit(window)
+            gval = guide_encoded[sg]
+            n_mm = hamming_distance_2bit(gval, window_val, length=20)
+
+            if n_mm > max_mismatches:
+                continue
+
+            # Convert guide_start to leftmost forward coordinate for on-target check
+            if strand == "+":
+                leftmost_pos = guide_start
+            else:
+                leftmost_pos = _rc_pos_to_forward(
+                    guide_start, pam_len, chrom_offsets, chrom_lengths
+                )
+
+            # Exclude on-target regardless of mismatch count
+            if sg.on_target_chrom_idx is not None:
+                chrom_idx, local_pos = _position_to_chrom(
+                    leftmost_pos, chrom_offsets, chrom_lengths
+                )
+                if (
+                    chrom_idx == sg.on_target_chrom_idx
+                    and local_pos == sg.on_target_local_pos
+                    and strand == sg.on_target_strand
+                ):
+                    continue
+
+            # Report position: 0-based leftmost for +, 0-based rightmost for -
+            if strand == "+":
+                report_pos_0based = guide_start
+            else:
+                report_pos_0based = leftmost_pos + 20 + pam_len - 1
+
+            offtarget_seq = decode_dna(window)
+
+            # Full genomic PAM for output
+            genomic_pam = ""
+            for i in range(pam_len):
+                gpos = pam_start + i
+                word_idx = gpos // 16
+                bit_offset = (gpos % 16) * 2
+                nuc_2bit = int((genome_packed[word_idx] >> bit_offset) & 0x3)
+                genomic_pam += decode_map[nuc_2bit]
+
+            results[sg].append(
+                {
+                    "position": report_pos_0based,  # 0-based global
+                    "n_mismatches": n_mm,
+                    "offtarget_seq": offtarget_seq,
+                    "genomic_pam": genomic_pam,
+                    "strand": strand,
+                }
+            )
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Numba CUDA strand search
+# ---------------------------------------------------------------------------
+
+try:
+    from beguidedoff.cuda_search import search_genome_cuda
+    _HAS_NUMBA_CUDA = True
+except Exception:
+    _HAS_NUMBA_CUDA = False
+
+
+def _search_strand_cuda(
+    genome_packed: np.ndarray,
+    total_bp: int,
+    scan_guides: List[_ScanGuide],
+    strand_label: str,
+    max_mismatches: int,
+    chrom_offsets: np.ndarray,
+    chrom_lengths: np.ndarray,
+    results_per_guide: int = 10240,
+) -> Tuple[dict, dict]:
+    """GPU search on one strand using Numba CUDA.
+
+    Returns (results_dict, overflow_dict).
+    results_dict: scan_key -> list of raw hit dicts.
+    overflow_dict: scan_key -> True if results_per_guide was exceeded.
+    """
+    results: dict = {sg: [] for sg in scan_guides}
+
+    n_guides = len(scan_guides)
+    guide_vals = np.zeros(n_guides, dtype=np.uint64)
+    pam_masks_arr = np.zeros((n_guides, 6), dtype=np.uint8)
+    pam_lens_arr = np.zeros(n_guides, dtype=np.uint8)
+    pam_3prime_arr = np.zeros(n_guides, dtype=np.uint8)
+
+    for i, sg in enumerate(scan_guides):
+        guide_vals[i] = encode_guide_64bit(encode_dna(sg.guide_seq))
+        mask = encode_pam_mask(sg.pam)
+        pam_masks_arr[i, : len(mask)] = mask
+        pam_lens_arr[i] = len(sg.pam)
+        pam_3prime_arr[i] = 1  # only 3prime is supported
+
+    if not _HAS_NUMBA_CUDA:
+        raise RuntimeError("Numba CUDA search is not available")
+
+    gpu_results, overflow_flags = search_genome_cuda(
+        genome_packed,
+        total_bp,
+        guide_vals,
+        pam_masks_arr,
+        pam_lens_arr,
+        pam_3prime_arr,
+        max_mismatches,
+        return_overflow=True,
+        results_per_guide=results_per_guide,
+    )
+
+    decode_map = {0: "A", 1: "C", 2: "G", 3: "T"}
+
+    for g_idx, sg in enumerate(scan_guides):
+        pam_len = len(sg.pam)
+        window = 20 + pam_len
+
+        for guide_start, n_mm in gpu_results[g_idx]:
+            if strand_label == "+":
+                leftmost_pos = int(guide_start)
+                report_pos = leftmost_pos
+            else:
+                leftmost_pos = _rc_pos_to_forward(
+                    int(guide_start), pam_len, chrom_offsets, chrom_lengths
+                )
+                # rightmost 0-based position for minus strand
+                report_pos = leftmost_pos + window - 1
+
+            # Exclude on-target regardless of mismatch count
+            if sg.on_target_chrom_idx is not None:
+                chrom_idx, local_pos = _position_to_chrom(
+                    leftmost_pos, chrom_offsets, chrom_lengths
+                )
+                if (
+                    chrom_idx == sg.on_target_chrom_idx
+                    and local_pos == sg.on_target_local_pos
+                    and strand_label == sg.on_target_strand
+                ):
+                    continue
+
+            # Extract 20-nt guide sequence from scanned genome
+            offtarget_seq = decode_dna(extract_window(genome_packed, int(guide_start), 20))
+
+            # Full genomic PAM (always 3prime in the scanned genome coordinates)
+            pam_start_scanned = int(guide_start) + 20
+
+            genomic_pam = ""
+            for i in range(pam_len):
+                gpos = pam_start_scanned + i
+                word_idx = gpos // 16
+                bit_offset = (gpos % 16) * 2
+                nuc_2bit = int((genome_packed[word_idx] >> bit_offset) & 0x3)
+                genomic_pam += decode_map[nuc_2bit]
+
+            results[sg].append(
+                {
+                    "position": report_pos,  # 0-based global forward coord
+                    "n_mismatches": n_mm,
+                    "offtarget_seq": offtarget_seq,
+                    "genomic_pam": genomic_pam,
+                    "strand": strand_label,
+                }
+            )
+
+    overflow = {sg: overflow_flags.get(g_idx, False) for g_idx, sg in enumerate(scan_guides)}
+    return results, overflow
+
+
+# ---------------------------------------------------------------------------
+# Main BEguidedOFF class
+# ---------------------------------------------------------------------------
+
+class beguidedoff:
+    def __init__(
+        self,
+        genome_path: str,
+        max_mismatches: int = 4,
+        scoring_method: str = "CCTOP",
+        device: Optional[str] = None,
+        n_top_offtargets: int = 3,
+        results_per_guide: int = 10240,
+    ):
+        self.genome_path = genome_path
+        self.max_mismatches = max_mismatches
+        self.scoring_method = scoring_method.upper()
+        self.n_top_offtargets = n_top_offtargets
+        self.results_per_guide = results_per_guide
+
+        if device is None:
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.device = torch.device(device)
+
+        self.genome_data = load_genome(genome_path)
+        self.total_bp = self.genome_data["total_bp"]
+        self.chrom_names = [str(c) for c in self.genome_data["chrom_names"]]
+        self.chrom_offsets = self.genome_data["chrom_offsets"]
+        self.chrom_lengths = self.genome_data["chrom_lengths"]
+
+        self.genome_forward_t = torch.from_numpy(
+            self.genome_data["genome_forward"].copy()
+        ).to(self.device)
+
+        if "genome_rc" in self.genome_data:
+            self.genome_rc_t = torch.from_numpy(
+                self.genome_data["genome_rc"].copy()
+            ).to(self.device)
+        else:
+            self.genome_rc_t = None
+
+    @property
+    def genome_info(self) -> dict:
+        return {
+            "build": "unknown",
+            "total_bp": self.total_bp,
+            "n_chromosomes": len(self.chrom_names),
+            "chromosomes": self.chrom_names,
+        }
+
+    def _resolve_chromosome(self, pos: int) -> str:
+        """Map global 0-based position to chromosome name."""
+        idx, _local = _position_to_chrom(pos, self.chrom_offsets, self.chrom_lengths)
+        return self.chrom_names[idx]
+
+    def _deduplicate_guides(self, guides: List[GuideInput]) -> Tuple[List[_ScanGuide], Dict[_ScanGuide, List[GuideInput]]]:
+        """Deduplicate guides by (seq, pam).
+
+        Returns:
+            scan_guides: list of unique _ScanGuide objects
+            mapping: scan_guide -> list of original GuideInput objects sharing it
+        """
+        mapping: Dict[_ScanGuide, List[GuideInput]] = defaultdict(list)
+
+        for g in guides:
+            # Resolve on-target chromosome index
+            ot_chrom_idx = None
+            ot_local_pos = None
+            ot_strand = None
+            if g.on_target_chrom and g.on_target_pos is not None:
+                ot_chrom_idx = _chrom_name_to_idx(g.on_target_chrom, self.genome_data["chrom_names"])
+                if ot_chrom_idx is not None:
+                    if g.on_target_strand is None:
+                        raise ValueError(
+                            f"Guide {g.guide_id} has on-target chromosome and position but no strand. "
+                            f"Please provide on_target_strand ('+' or '-')."
+                        )
+                    # Convert on-target position to leftmost 0-based local coordinate for exclusion
+                    pam_len = len(g.pam)
+                    window = 20 + pam_len
+                    if g.on_target_strand == "+":
+                        ot_local_pos = g.on_target_pos - 1
+                    else:
+                        # User provides rightmost 1-based position for minus strand
+                        ot_local_pos = g.on_target_pos - window
+                    ot_strand = g.on_target_strand
+
+            sg = _ScanGuide(
+                guide_seq=g.guide_seq,
+                pam=g.pam,
+                on_target_chrom_idx=ot_chrom_idx,
+                on_target_local_pos=ot_local_pos,
+                on_target_strand=ot_strand,
+            )
+            mapping[sg].append(g)
+
+        scan_guides = list(mapping.keys())
+        return scan_guides, mapping
+
+    def _process_raw_hits(
+        self,
+        raw_hits_dict: Dict[_ScanGuide, List[dict]],
+        mapping: Dict[_ScanGuide, List[GuideInput]],
+        count_score_threshold: Optional[float],
+        include_non_editable: bool,
+    ) -> Tuple[Dict[str, List[OffTarget]], Dict[str, int]]:
+        """Take raw search hits, score them, apply per-guide edit window, and map back.
+
+        Returns:
+            group_results: dict mapping guide_id -> list of OffTarget objects
+            below_threshold_counts: dict mapping guide_id -> number of off-targets
+                with editable bases and a CCTOP score <= count_score_threshold
+        """
+        group_results: Dict[str, List[OffTarget]] = defaultdict(list)
+        below_threshold_counts: Dict[str, int] = defaultdict(int)
+
+        for sg, hits in raw_hits_dict.items():
+            for raw in hits:
+                pos_0based_global = raw["position"]
+                chrom = self._resolve_chromosome(pos_0based_global)
+                idx, local = _position_to_chrom(pos_0based_global, self.chrom_offsets, self.chrom_lengths)
+
+                # 1-based position for output
+                pos_1based = local + 1
+
+                offtarget_seq = raw["offtarget_seq"]
+                genomic_pam = raw["genomic_pam"]
+                n_mm = raw["n_mismatches"]
+
+                guide_val = encode_guide_64bit(encode_dna(sg.guide_seq))
+                window_val = encode_guide_64bit(encode_dna(offtarget_seq))
+                mm_positions = mismatch_positions_2bit(guide_val, window_val, length=20)
+
+                score = calculate_cctop_score(mm_positions)
+
+                # Map to each original GuideInput that shares this scan key
+                for g in mapping[sg]:
+                    editable_positions = editable_base_in_window(
+                        offtarget_seq, g.editor_type, g.edit_window_start, g.edit_window_end
+                    )
+                    is_editable = bool(editable_positions)
+                    if not include_non_editable and not is_editable:
+                        continue
+
+                    contexts = get_trinucleotide_contexts(offtarget_seq, editable_positions)
+
+                    ot = OffTarget(
+                        chromosome=chrom,
+                        position=pos_1based,  # 1-based output
+                        strand=raw["strand"],
+                        offtarget_seq=offtarget_seq,
+                        genomic_pam=genomic_pam,
+                        input_pam=sg.pam,
+                        guide_seq=sg.guide_seq,
+                        be_preset=g.be_preset or "",
+                        n_mismatches=n_mm,
+                        mismatch_positions=mm_positions,
+                        score=score,
+                        editable_bases=editable_positions,
+                        base_edit_context=contexts,
+                    )
+                    group_results[g.guide_id].append(ot)
+
+                    if count_score_threshold is not None and is_editable and score <= count_score_threshold:
+                        below_threshold_counts[g.guide_id] += 1
+
+        return group_results, below_threshold_counts
+
+    def search(
+        self,
+        input_file: Optional[str] = None,
+        guides: Optional[List[GuideInput]] = None,
+        return_all: bool = False,
+        count_score_threshold: Optional[float] = None,
+        output_file: Optional[str] = None,
+        include_non_editable: bool = False,
+        presets_path: Optional[str] = None,
+        verbose: bool = True,
+        logger: Optional[logging.Logger] = None,
+    ) -> pd.DataFrame:
+        if (input_file is None) == (guides is None):
+            raise ValueError("Exactly one of input_file or guides must be provided")
+
+        if input_file is not None:
+            if presets_path is None:
+                presets_path = str(Path(__file__).parent.parent / "be_presets.tsv")
+            guides = load_guides_from_tsv(input_file, presets_path=presets_path)
+
+        if not guides:
+            raise ValueError("No guides provided")
+
+        log = logger if logger is not None else _LOGGER
+
+        # Validate all guides have 3prime PAM (5prime is not supported)
+        for g in guides:
+            if g.pam_position.lower() != "3prime":
+                raise ValueError(
+                    f"Guide {g.guide_id} has pam_position '{g.pam_position}'. "
+                    f"Only 3prime PAM is supported."
+                )
+
+        # When return_all is requested, also include sites without editable bases
+        effective_include_non_editable = return_all
+
+        scan_guides, mapping = self._deduplicate_guides(guides)
+
+        if verbose:
+            log.info(
+                "Guides after deduplication: %d (from %d input rows)",
+                len(scan_guides),
+                len(guides),
+            )
+
+        if self.device.type == "cuda" and _HAS_NUMBA_CUDA:
+            if verbose:
+                log.info("Running GPU search on %s ...", self.device)
+            raw_hits_dict, overflow = self._search_gpu(
+                scan_guides, mapping, log=log, verbose=verbose
+            )
+            for sg, ovf in overflow.items():
+                if ovf:
+                    warnings.warn(
+                        f"Hit buffer overflow for guide {sg.guide_seq} "
+                        f"(PAM={sg.pam}). Some off-targets may be truncated. "
+                        f"Consider increasing results_per_guide (current: {self.results_per_guide})."
+                    )
+        else:
+            if verbose:
+                log.info("CUDA not available, running CPU search (this will be slow) ...")
+            raw_hits_dict = self._search_cpu(
+                scan_guides, mapping, log=log, verbose=verbose
+            )
+
+        group_results, below_threshold_counts = self._process_raw_hits(
+            raw_hits_dict, mapping, count_score_threshold, effective_include_non_editable
+        )
+
+        dfs = []
+        for g in guides:
+            gid = g.guide_id
+            hits = group_results.get(gid, [])
+            # CCTOP: lower = more concerning off-target (sort ascending)
+            hits.sort(key=lambda x: x.score)
+            if not return_all:
+                hits = hits[: self.n_top_offtargets]
+            n_below = below_threshold_counts.get(gid, 0)
+            if hits:
+                dfs.append(offtargets_to_dataframe(hits, n_offtargets_below_threshold=n_below))
+        if dfs:
+            df = pd.concat(dfs, ignore_index=True)
+        else:
+            df = pd.DataFrame()
+        if output_file:
+            df.to_csv(output_file, sep="\t", index=False)
+            if verbose:
+                log.info("Wrote results to %s", output_file)
+        return df
+
+    def _search_cpu(
+        self,
+        scan_guides: List[_ScanGuide],
+        mapping: Dict[_ScanGuide, List[GuideInput]],
+        log: Optional[logging.Logger],
+        verbose: bool,
+    ) -> Dict[_ScanGuide, List[dict]]:
+        """CPU search across all PAM groups."""
+        pam_masks = {sg: encode_pam_mask(sg.pam) for sg in scan_guides}
+
+        all_raw: Dict[_ScanGuide, List[dict]] = {sg: [] for sg in scan_guides}
+
+        strands = [("+", self.genome_data["genome_forward"])]
+        if self.genome_rc_t is not None and "genome_rc" in self.genome_data:
+            strands.append(("-", self.genome_data["genome_rc"]))
+
+        for strand_label, genome_packed in strands:
+            if verbose:
+                log.info("  Searching %s strand ...", strand_label)
+            strand_results = _search_strand_cpu(
+                genome_packed,
+                self.total_bp,
+                scan_guides,
+                pam_masks,
+                strand_label,
+                self.max_mismatches,
+                self.chrom_offsets,
+                self.chrom_lengths,
+                self.genome_data["chrom_names"],
+            )
+            for sg, hits in strand_results.items():
+                all_raw[sg].extend(hits)
+
+        return all_raw
+
+    def _search_gpu(
+        self,
+        scan_guides: List[_ScanGuide],
+        mapping: Dict[_ScanGuide, List[GuideInput]],
+        log: Optional[logging.Logger],
+        verbose: bool,
+    ) -> Tuple[Dict[_ScanGuide, List[dict]], Dict[_ScanGuide, bool]]:
+        """GPU search using Numba CUDA."""
+        raw_combined: Dict[_ScanGuide, List[dict]] = {sg: [] for sg in scan_guides}
+        overflow_combined: Dict[_ScanGuide, bool] = {sg: False for sg in scan_guides}
+
+        strands = [("+", self.genome_data["genome_forward"])]
+        if "genome_rc" in self.genome_data:
+            strands.append(("-", self.genome_data["genome_rc"]))
+
+        for strand_label, genome_packed in strands:
+            if verbose:
+                log.info("  GPU searching %s strand ...", strand_label)
+            strand_results, overflow = _search_strand_cuda(
+                genome_packed,
+                self.total_bp,
+                scan_guides,
+                strand_label,
+                self.max_mismatches,
+                self.chrom_offsets,
+                self.chrom_lengths,
+                results_per_guide=self.results_per_guide,
+            )
+            for sg, hits in strand_results.items():
+                raw_combined[sg].extend(hits)
+            for sg, ovf in overflow.items():
+                if ovf:
+                    overflow_combined[sg] = True
+
+        return raw_combined, overflow_combined

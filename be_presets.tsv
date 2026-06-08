@@ -1,0 +1,27 @@
+name	editing	general_edit_start	general_edit_end	high_edit_start	high_edit_end	guide_length	pam	cas	source
+ABE8e	A-to-G	2	13	3	8	20	NGG	spCas9	Richter et al, 2020; Chen et al, 2023
+ABE8e-N108Q	A-to-G	3	8	4	6	20	NGG	spCas9	Chen et al, 2023
+ABE9	A-to-G	4	7	5	6	20	NGG	spCas9	Chen et al, 2023
+ABE-NW1	A-to-G	3	8	4	7	20	NGG	spCas9	Valdez et al, 2025
+ABE-Umax	A-to-G	3	11	4	6	20	NGG	spCas9	Qin et al, 2024
+ABE-Umax-ex1-rest1	A-to-G	4	12	4	8	20	NGG	spCas9	Qin et al, 2024
+ABE-Umax-ex2-rest1	A-to-G	12	15	14	15	20	NGG	spCas9	Qin et al, 2024
+spABE3030	A-to-G	4	8	5	6	20	NGG	spCas9	Schmitt et al, 2023
+saABE8e	A-to-G	5	13	5	13	20	NNGRRT	saCas9	Richter et al, 2020
+SaKKH-ABE8e	A-to-G	8	14	8	14	20	NNNRRT	saCas9	Richter et al, 2020
+ngABE8e	A-to-G	2	13	3	8	20	NGN	ngCas9	Richter et al, 2020; Chen et al, 2023
+ngABE8e-N108Q	A-to-G	3	8	4	6	20	NGN	ngCas9	Chen et al, 2023
+ngABE9	A-to-G	4	7	5	6	20	NGN	ngCas9	Chen et al, 2023
+ngABE-NW1	A-to-G	3	8	4	7	20	NGN	ngCas9	Valdez et al, 2025
+ngABE-Umax	A-to-G	3	11	4	6	20	NGN	ngCas9	Qin et al, 2024
+ngABE-Umax-ex1-rest1	A-to-G	4	12	4	8	20	NGN	ngCas9	Qin et al, 2024
+ngABE-Umax-ex2-rest1	A-to-G	12	15	14	15	20	NGN	ngCas9	Qin et al, 2024
+ngABE3030	A-to-G	4	8	5	6	20	NGN	ngCas9	Schmitt et al, 2023
+TadCBEd	C-to-T	5	8	6	6	20	NGG	spCas9	Neugebauer et al, 2023
+CBE6d	C-to-T	2	10	6	6	20	NGG	spCas9	Zhang et al, 2024
+TCBE-Umax	C-to-T	3	12	5	7	20	NGG	spCas9	Qin et al, 2026
+TCBE-Umax-rest1	C-to-T	4	7	6	6	20	NGG	spCas9	Qin et al, 2026
+ngTadCBEd	C-to-T	5	8	6	6	20	NGN	ngCas9	Neugebauer et al, 2023
+ngCBE6d	C-to-T	2	10	6	6	20	NGN	ngCas9	Zhang et al, 2024
+ngTCBE-Umax	C-to-T	3	12	5	7	20	NGN	ngCas9	Qin et al, 2026
+ngTCBE-Umax-rest1	C-to-T	4	7	6	6	20	NGN	ngCas9	Qin et al, 2026

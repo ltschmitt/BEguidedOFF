@@ -1,0 +1,3 @@
+guide_id	guide_seq	pam	pam_position	edit_window_start	edit_window_end	editor_type
+g1	ACGTACGTACGTACGTACGT	NGG	3prime	4	8	CBE
+g2	TGCATGCATGCATGCATGCA	NGG	3prime	4	8	ABE
