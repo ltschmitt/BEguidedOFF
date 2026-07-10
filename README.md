@@ -34,17 +34,17 @@ pixi shell            # open a shell inside the env
 
 BEguidedOFF accepts two TSV formats.
 
-### Format 1: Preset-based (most common)
+### Format 1: Profile-based (most common)
 
-Use this when your data comes from a base-editing pipeline and you have `be_preset` values.
+Use this when your data comes from a base-editing pipeline and you have `base_editor` values.
 
 | Column | Description |
 |--------|-------------|
 | `chromosome` | Target chromosome (e.g. `1`, `X`, `7`) — used to exclude the on-target from off-target reports |
 | `position` | 1-based genomic position of the target — used to exclude the on-target (see Position Conventions below) |
 | `guide_rna_sequence` | 20 bp guide RNA sequence (DNA, ACGT) |
-| `pam_sequence` | *On-target* PAM sequence (e.g. `TGG`) — **not** used for off-target scanning; scanning uses the PAM family from the preset |
-| `be_preset` | Base editor preset name matching a row in `be_presets.tsv` |
+| `pam_sequence` | *On-target* PAM sequence (e.g. `TGG`) — **not** used for off-target scanning; scanning uses the PAM family from the profile |
+| `base_editor` | Base editor profile name matching a row in `base_editor_profiles.tsv` |
 | `strand_used` *(optional)* | `+` or `-` — on-target strand (required when `chromosome` and `position` are provided, used for correct on-target exclusion) |
 
 Other metadata columns (gene, mutation IDs, etc.) are ignored and preserved in the output by row index. No unique identifier is required.
@@ -52,7 +52,7 @@ Other metadata columns (gene, mutation IDs, etc.) are ignored and preserved in t
 **Example row:**
 
 ```
-chromosome  position  mutated_base  corrected_base  target_base  strand_used  editing_position  bystander_positions  guide_rna_sequence      pam_sequence  be_preset    gene
+chromosome  position  mutated_base  corrected_base  target_base  strand_used  editing_position  bystander_positions  guide_rna_sequence      pam_sequence  base_editor  gene
 1           18700668  T             C               C            -            4                 8                    GGCAGTTACTGAACCAGACC  TGG           ABE-NW1    PAX7
 ```
 
@@ -70,26 +70,26 @@ Use this when you want full control over every parameter.
 | `chromosome` *(optional)* | On-target chromosome for 0-mm exclusion |
 | `position` *(optional)* | 1-based on-target position for 0-mm exclusion |
 | `on_target_strand` *(optional, required with chromosome/position)* | `+` or `-` |
-| `be_preset` *(optional)* | Base editor preset name (carried through to output) |
+| `base_editor` *(optional)* | Base editor profile name (carried through to output) |
 
 **Note:** Only **3' PAM (`3prime`)** is supported. 5' PAM (`5prime`) is not supported.
 
 ---
 
-## Base Editor Presets (`be_presets.tsv`)
+## Base Editor Profiles (`base_editor_profiles.tsv`)
 
-The preset file defines the editing window and PAM family for each base editor variant:
+The profile file defines the editing window and PAM family for each base editor variant:
 
 | Column | Description |
 |--------|-------------|
-| `name` | Preset name (e.g. `ABE8e`, `SaKKH-ABE8e`) |
-| `editing` | Base conversion (e.g. `A-to-G`, `C-to-T`) |
+| `name` | Profile name (e.g. `ABE8e`, `SaKKH-ABE8e`, `NG-ABE8e`, `SpRY-ABE8e`) |
+| `editing` | Base conversion type (`ABE` for A→G editors, `CBE` for C→T editors) |
 | `general_edit_start` | 1-indexed start of the high-activity window |
 | `general_edit_end` | 1-indexed end of the high-activity window |
-| `pam` | **PAM family** used for genome scanning (`NGG`, `NNGRRT`, `NNNRRT`, `NGN`) |
-| `cas` | Cas protein family (`spCas9`, `saCas9`, `ngCas9`) |
+| `pam` | **PAM family** used for genome scanning (`NGG`, `NNGRRT`, `NNNRRT`, `NGN`, `NNN`) |
+| `cas` | Cas protein family (`SpCas9`, `SaCas9`, `SpG / SpCas9-NG`, `SpRY`) |
 
-**Important:** The `pam` column in `be_presets.tsv` is the IUPAC PAM **family** used for genome scanning (e.g. `NGG` matches any `N` then `G` then `G`). The `pam_sequence` column in your input data is the on-target concrete PAM and is **not** used for scanning.
+**Important:** The `pam` column in `base_editor_profiles.tsv` is the IUPAC PAM **family** used for genome scanning (e.g. `NGG` matches any `N` then `G` then `G`). The `pam_sequence` column in your input data is the on-target concrete PAM and is **not** used for scanning.
 
 ---
 
@@ -120,7 +120,7 @@ This produces `hg38_otbe.npz` containing:
 ```bash
 pixi run python -m beguidedoff.cli search \
     --genome hg38_otbe.npz \
-    --guides relevant_files/input_data_example.tsv \
+    --guides relevant_files/input_example.tsv \
     --max-mismatches 5 \
     --n-top 10 \
     --output results.tsv \
@@ -148,16 +148,16 @@ df = finder.search(input_file="guides.tsv", return_all=True)
 
 # Or search from GuideInput objects directly
 from beguidedoff.io import load_guides_from_tsv
-guides = load_guides_from_tsv("guides.tsv", presets_path="be_presets.tsv")
+guides = load_guides_from_tsv("guides.tsv", presets_path="base_editor_profiles.tsv")
 df = finder.search(guides=guides, return_all=True)
 ```
 
-### Advanced: Custom presets path
+### Advanced: Custom profile path
 
-If `be_presets.tsv` is not in the app root directory, provide it explicitly via the Python API:
+If `base_editor_profiles.tsv` is not in the app root directory, provide it explicitly via the Python API:
 
 ```python
-guides = load_guides_from_tsv("my_input.tsv", presets_path="/path/to/be_presets.tsv")
+guides = load_guides_from_tsv("my_input.tsv", presets_path="/path/to/base_editor_profiles.tsv")
 ```
 
 ---
@@ -169,7 +169,7 @@ The default output is a long-format TSV with one row per off-target hit.
 | Column | Description |
 |--------|-------------|
 | `guide_rna_sequence` | Original on-target guide sequence |
-| `be_preset` | Base editor preset name |
+| `base_editor` | Base editor profile name |
 | `ot_rank` | Rank by CCTOP score (ascending; lower = more concerning) |
 | `ot_chromosome` | Off-target chromosome |
 | `ot_position` | **1-based** genomic position of the guide start (PAM-adjacent) |

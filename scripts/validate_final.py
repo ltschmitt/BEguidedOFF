@@ -120,8 +120,8 @@ def validate_family(guides, cas_path, name):
 
 def main():
     guides = load_guides_from_tsv(
-        INPUT_DIR / "input_data_example.tsv",
-        presets_path=Path(__file__).parent.parent / "be_presets.tsv",
+        INPUT_DIR / "input_example.tsv",
+        presets_path=Path(__file__).parent.parent / "base_editor_profiles.tsv",
     )
 
     ngg_guides = [g for g in guides if g.pam == "NGG"]

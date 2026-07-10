@@ -17,7 +17,7 @@ class GuideInput:
     on_target_chrom: Optional[str] = None  # on-target chromosome (e.g. "1", "X")
     on_target_pos: Optional[int] = None    # on-target position (1-based)
     on_target_strand: Optional[str] = None  # "+" or "-"
-    be_preset: Optional[str] = None  # base editor preset name (e.g. "ABE-NW1")
+    base_editor: Optional[str] = None  # base editor profile name (e.g. "ABE-NW1")
 
 
 @dataclass
@@ -32,7 +32,7 @@ class OffTarget:
     genomic_pam: str  # full genomic PAM sequence that matched the pattern
     input_pam: str  # PAM pattern used for search (e.g. "NGG")
     guide_seq: str  # original on-target guide sequence
-    be_preset: str  # base editor preset name
+    base_editor: str  # base editor profile name
     n_mismatches: int
     mismatch_positions: List[int]  # 1-indexed mismatch positions
     score: float

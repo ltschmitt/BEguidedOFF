@@ -38,8 +38,8 @@ def main():
     from beguidedoff.io import load_guides_from_tsv
 
     guides = load_guides_from_tsv(
-        "relevant_files/input_data_example.tsv",
-        presets_path="be_presets.tsv",
+        "relevant_files/input_example.tsv",
+        presets_path="base_editor_profiles.tsv",
     )
 
     # Cas-OFFinder outputs

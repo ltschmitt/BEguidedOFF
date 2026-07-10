@@ -81,7 +81,7 @@ def main():
     srch.add_argument("--count-score-threshold", type=float, default=15.0, help="CCTOP score threshold for counting relevant off-targets (<= threshold, default: 15.0)")
     srch.add_argument("--output", default=None, help="Output TSV file")
     srch.add_argument("--include-non-editable", action="store_true", help="Include off-targets without editable bases (also implied by --return-all)")
-    srch.add_argument("--presets-path", default=None, help="Path to be_presets.tsv (default: be_presets.tsv in app root)")
+    srch.add_argument("--presets-path", default=None, help="Path to base_editor_profiles.tsv (default: base_editor_profiles.tsv in app root)")
     srch.set_defaults(func=cmd_search)
 
     # verify

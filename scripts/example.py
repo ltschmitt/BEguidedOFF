@@ -12,7 +12,7 @@ root = Path(__file__).parent.parent
 relevant = root / "relevant_files"
 fasta = relevant / "Homo_sapiens.GRCh38.dna.primary_assembly.fa"
 npz = root / "hg38_otbe.npz"
-presets = root / "be_presets.tsv"
+profiles = root / "base_editor_profiles.tsv"
 
 # Step 1: Encode genome (one-time)
 if not npz.exists():
@@ -34,7 +34,8 @@ finder = beguidedoff(
 
 # Step 3a: Search from file
 results = finder.search(
-    input_file=str(relevant / "input_data_example.tsv"),
+    input_file=str(relevant / "input_example.tsv"),
+    presets_path=str(profiles),
     verbose=True,
 )
 print(results.head())

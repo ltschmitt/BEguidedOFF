@@ -1,0 +1,39 @@
+name	editing	general_edit_start	general_edit_end	high_edit_start	high_edit_end	pam	cas	source
+ABE8e	ABE	2	13	3	8	NGG	SpCas9	Richter et al, 2020; Chen et al, 2023
+ABE8e-N108Q	ABE	3	8	4	6	NGG	SpCas9	Chen et al, 2023
+ABE9	ABE	4	7	5	6	NGG	SpCas9	Chen et al, 2023
+ABE-NW1	ABE	3	8	4	7	NGG	SpCas9	Valdez et al, 2025
+ABE-Umax	ABE	3	11	4	6	NGG	SpCas9	Qin et al, 2024
+ABE-Umax-ex1-rest1	ABE	4	12	4	8	NGG	SpCas9	Qin et al, 2024
+ABE-Umax-ex2-rest1	ABE	12	15	14	15	NGG	SpCas9	Qin et al, 2024
+spABE3030	ABE	4	8	5	6	NGG	SpCas9	Schmitt et al, 2023
+Sa-ABE8e	ABE	5	13	5	13	NNGRRT	SaCas9	Richter et al, 2020
+SaKKH-ABE8e	ABE	8	14	8	14	NNNRRT	SaCas9	Richter et al, 2020
+NG-ABE8e	ABE	2	13	3	8	NGN	SpG / SpCas9-NG	Richter et al, 2020; Chen et al, 2023
+NG-ABE8e-N108Q	ABE	3	8	4	6	NGN	SpG / SpCas9-NG	Chen et al, 2023
+NG-ABE9	ABE	4	7	5	6	NGN	SpG / SpCas9-NG	Chen et al, 2023
+NG-ABE-NW1	ABE	3	8	4	7	NGN	SpG / SpCas9-NG	Valdez et al, 2025
+NG-ABE-Umax	ABE	3	11	4	6	NGN	SpG / SpCas9-NG	Qin et al, 2024
+NG-ABE-Umax-ex1-rest1	ABE	4	12	4	8	NGN	SpG / SpCas9-NG	Qin et al, 2024
+NG-ABE-Umax-ex2-rest1	ABE	12	15	14	15	NGN	SpG / SpCas9-NG	Qin et al, 2024
+NG-ABE3030	ABE	4	8	5	6	NGN	SpG / SpCas9-NG	Schmitt et al, 2023
+SpRY-ABE8e	ABE	2	13	3	8	NNN	SpRY	Richter et al, 2020; Chen et al, 2023
+SpRY-ABE8e-N108Q	ABE	3	8	4	6	NNN	SpRY	Chen et al, 2023
+SpRY-ABE9	ABE	4	7	5	6	NNN	SpRY	Chen et al, 2023
+SpRY-ABE-NW1	ABE	3	8	4	7	NNN	SpRY	Valdez et al, 2025
+SpRY-ABE-Umax	ABE	3	11	4	6	NNN	SpRY	Qin et al, 2024
+SpRY-ABE-Umax-ex1-rest1	ABE	4	12	4	8	NNN	SpRY	Qin et al, 2024
+SpRY-ABE-Umax-ex2-rest1	ABE	12	15	14	15	NNN	SpRY	Qin et al, 2024
+SpRY-ABE3030	ABE	4	8	5	6	NNN	SpRY	Schmitt et al, 2023
+TadCBEd	CBE	5	8	6	6	NGG	SpCas9	Neugebauer et al, 2023
+CBE6d	CBE	2	10	6	6	NGG	SpCas9	Zhang et al, 2024
+TCBE-Umax	CBE	3	12	5	7	NGG	SpCas9	Qin et al, 2026
+TCBE-Umax-rest1	CBE	4	7	6	6	NGG	SpCas9	Qin et al, 2026
+NG-TadCBEd	CBE	5	8	6	6	NGN	SpG / SpCas9-NG	Neugebauer et al, 2023
+NG-CBE6d	CBE	2	10	6	6	NGN	SpG / SpCas9-NG	Zhang et al, 2024
+NG-TCBE-Umax	CBE	3	12	5	7	NGN	SpG / SpCas9-NG	Qin et al, 2026
+NG-TCBE-Umax-rest1	CBE	4	7	6	6	NGN	SpG / SpCas9-NG	Qin et al, 2026
+SpRY-TadCBEd	CBE	5	8	6	6	NNN	SpRY	Neugebauer et al, 2023
+SpRY-CBE6d	CBE	2	10	6	6	NNN	SpRY	Zhang et al, 2024
+SpRY-TCBE-Umax	CBE	3	12	5	7	NNN	SpRY	Qin et al, 2026
+SpRY-TCBE-Umax-rest1	CBE	4	7	6	6	NNN	SpRY	Qin et al, 2026

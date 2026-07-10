@@ -4,7 +4,12 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 from beguidedoff.types import GuideInput, OffTarget
-from beguidedoff.base_editing import get_edit_window_from_preset
+from beguidedoff.base_editing import get_edit_window_from_profile
+
+_EDITING_TO_TYPE = {
+    "ABE": "ABE",
+    "CBE": "CBE",
+}
 
 
 def load_guides_from_tsv(
@@ -16,9 +21,11 @@ def load_guides_from_tsv(
     Supports two formats:
     1. Full format with explicit columns: guide_seq, pam,
        edit_window_start, edit_window_end, editor_type (optional: chromosome,
-       position, on_target_strand)
-    2. Preset-based format (like input_data_example.tsv): guide_rna_sequence,
-       be_preset (optional: chromosome, position, strand_used)
+       position, on_target_strand, base_editor)
+    2. Profile-based format (e.g. ``relevant_files/input_example.tsv``):
+       ``guide_rna_sequence``, ``base_editor`` (optional: chromosome,
+       position, strand_used). The matching row in ``base_editor_profiles.tsv``
+       supplies ``pam``, ``general_edit_start`` and ``general_edit_end``.
 
     guide_id is NOT read from the input -- it is auto-generated internally as
     row_0, row_1, ... so that the output pipeline can map results back to the
@@ -28,17 +35,21 @@ def load_guides_from_tsv(
 
     Args:
         input_file: Path to TSV file.
-        presets_path: Path to be_presets.tsv (required if using preset-based input).
+        presets_path: Path to ``base_editor_profiles.tsv`` (required when using
+            profile-based input).
 
     Returns:
         List of GuideInput objects.
+
+    Raises:
+        ValueError: If required columns are missing, the profile name is not
+            found in the profiles file, or the editing type is unrecognised.
     """
     df = pd.read_csv(input_file, sep="\t")
     guides = []
 
     # Determine format
     if "guide_seq" in df.columns:
-        # Full explicit format
         for idx, row in df.iterrows():
             on_target_chrom = (
                 str(row.get("chromosome", ""))
@@ -65,27 +76,22 @@ def load_guides_from_tsv(
                     on_target_chrom=on_target_chrom or None,
                     on_target_pos=on_target_pos,
                     on_target_strand=on_target_strand,
-                    be_preset=str(row.get("be_preset", "")) or None,
+                    base_editor=str(row.get("base_editor", "")) or None,
                 )
             )
-    elif "guide_rna_sequence" in df.columns and "be_preset" in df.columns:
-        # Preset-based format
+    elif "guide_rna_sequence" in df.columns and "base_editor" in df.columns:
         if presets_path is None:
-            raise ValueError("presets_path is required when using preset-based input")
-        for idx, row in df.iterrows():
-            be_preset = str(row["be_preset"])
-            edit_start, edit_end, pam, _cas, editing = get_edit_window_from_preset(
-                be_preset, presets_path
+            raise ValueError(
+                "presets_path is required when using profile-based input "
+                "(guide_rna_sequence + base_editor columns)"
             )
-            # Infer editor type from editing column
-            editor_type = editing.split("-")[0].upper()  # "A-to-G" -> "A"
-            # Map to CBE/ABE/CGE
-            if editor_type == "A":
-                editor_type = "ABE"
-            elif editor_type == "C":
-                editor_type = "CBE"
-            else:
-                raise ValueError(f"Cannot infer editor type from editing: {editing}")
+        for idx, row in df.iterrows():
+            base_editor = str(row["base_editor"])
+            edit_start, edit_end, pam = get_edit_window_from_profile(
+                base_editor, presets_path
+            )
+
+            editor_type = _resolve_editor_type(presets_path, base_editor)
 
             on_target_chrom = (
                 str(row.get("chromosome", ""))
@@ -113,15 +119,37 @@ def load_guides_from_tsv(
                     on_target_chrom=on_target_chrom or None,
                     on_target_pos=on_target_pos,
                     on_target_strand=on_target_strand,
-                    be_preset=be_preset,
+                    base_editor=base_editor,
                 )
             )
     else:
         raise ValueError(
             f"Input file must contain either (guide_seq, pam, ...) or "
-            f"(guide_rna_sequence, be_preset) columns. Found: {list(df.columns)}"
+            f"(guide_rna_sequence, base_editor) columns. Found: {list(df.columns)}"
         )
     return guides
+
+
+def _resolve_editor_type(profiles_path: str, base_editor: str) -> str:
+    """Read the ``editing`` column from the profile row and map to editor_type.
+
+    The new ``base_editor_profiles.tsv`` uses ``editing`` values ``ABE`` /
+    ``CBE`` which already match ``GuideInput.editor_type``. Unknown values
+    raise a clear ``ValueError``.
+    """
+    profiles_df = pd.read_csv(profiles_path, sep="\t")
+    row = profiles_df[profiles_df["name"] == base_editor]
+    if row.empty:
+        raise ValueError(
+            f"Unknown base editor '{base_editor}' in {profiles_path}"
+        )
+    editing = str(row.iloc[0]["editing"])
+    if editing not in _EDITING_TO_TYPE:
+        raise ValueError(
+            f"Base editor '{base_editor}' has unrecognised editing type "
+            f"'{editing}'. Expected one of: {sorted(_EDITING_TO_TYPE)}"
+        )
+    return _EDITING_TO_TYPE[editing]
 
 
 def offtargets_to_dataframe(
@@ -135,7 +163,7 @@ def offtargets_to_dataframe(
         rows.append(
             {
                 "guide_rna_sequence": ot.guide_seq,
-                "be_preset": ot.be_preset,
+                "base_editor": ot.base_editor,
                 "ot_rank": rank,
                 "ot_chromosome": ot.chromosome,
                 "ot_position": ot.position,
@@ -150,5 +178,3 @@ def offtargets_to_dataframe(
         )
         rank += 1
     return pd.DataFrame(rows)
-
-

@@ -476,7 +476,7 @@ class beguidedoff:
                         genomic_pam=genomic_pam,
                         input_pam=sg.pam,
                         guide_seq=sg.guide_seq,
-                        be_preset=g.be_preset or "",
+                        base_editor=g.base_editor or "",
                         n_mismatches=n_mm,
                         mismatch_positions=mm_positions,
                         score=score,
@@ -507,7 +507,7 @@ class beguidedoff:
 
         if input_file is not None:
             if presets_path is None:
-                presets_path = str(Path(__file__).parent.parent / "be_presets.tsv")
+                presets_path = str(Path(__file__).parent.parent / "base_editor_profiles.tsv")
             guides = load_guides_from_tsv(input_file, presets_path=presets_path)
 
         if not guides:

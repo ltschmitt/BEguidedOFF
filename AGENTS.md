@@ -15,8 +15,8 @@
 - API signatures and data layouts are in `relevant_files/chat.md` sections 4, 7, 10.
 
 ## Key Data Files (Do Not Guess Formats)
-- `be_presets.tsv` — base editor lookup. **Use `general_edit_start`/`general_edit_end`** as the search window for off-targets. Columns include `pam`, `cas`, `editing`.
-- `relevant_files/input_data_example.tsv` — example input. Relevant columns: `guide_rna_sequence`, `pam_sequence`, `be_preset`. Other columns are metadata.
+- `base_editor_profiles.tsv` — base editor lookup. **Use `general_edit_start`/`general_edit_end`** as the search window for off-targets. Columns include `pam`, `cas`, `editing`.
+- `relevant_files/input_example.tsv` — example input. Relevant columns: `guide_rna_sequence`, `base_editor` (and optional `pam_sequence`). Other columns are metadata.
 - `relevant_files/cfd.py` — **existing, working CFD scorer** (Doench 2016). Guide bases must be converted T→U; target bases use reverse complement for lookup. The scoring module ports this logic directly.
 - `relevant_files/Homo_sapiens.GRCh38.dna.primary_assembly.fa` — human genome FASTA for converter.
 

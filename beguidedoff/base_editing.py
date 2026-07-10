@@ -1,8 +1,9 @@
 """Base editing window logic."""
-from typing import List
-import numpy as np
+from typing import List, Tuple
 
 from beguidedoff.encoding import BIT_TO_NUC
+
+_GUIDE_LENGTH = 20
 
 
 def editable_base_in_window(
@@ -50,23 +51,41 @@ def has_editable_base(offtarget_seq: str, editor_type: str, edit_window_start: i
     return len(editable_base_in_window(offtarget_seq, editor_type, edit_window_start, edit_window_end)) > 0
 
 
-def get_edit_window_from_preset(be_preset: str, presets_path: str) -> tuple:
-    """Look up editing window from be_presets.tsv file.
+def get_edit_window_from_profile(base_editor: str, profiles_path: str) -> Tuple[int, int, str]:
+    """Look up editing window from a base_editor_profiles.tsv file.
+
+    Args:
+        base_editor: Profile name (must match a row in the ``name`` column).
+        profiles_path: Path to the base editor profiles TSV.
 
     Returns:
-        (edit_window_start, edit_window_end, pam, cas, editing)
+        (general_edit_start, general_edit_end, pam).
+
+    Raises:
+        ValueError: If the profile name is not found, or required columns are missing.
     """
     import pandas as pd
 
-    df = pd.read_csv(presets_path, sep="\t")
-    row = df[df["name"] == be_preset]
+    required_cols = {"name", "general_edit_start", "general_edit_end", "pam"}
+    df = pd.read_csv(profiles_path, sep="\t")
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"Base editor profiles file {profiles_path} is missing required columns: "
+            f"{sorted(missing)}"
+        )
+
+    row = df[df["name"] == base_editor]
     if row.empty:
-        raise ValueError(f"Unknown be_preset: {be_preset}")
+        available = ", ".join(sorted(df["name"].head(5).tolist()))
+        more = "..." if len(df) > 5 else ""
+        raise ValueError(
+            f"Unknown base editor '{base_editor}' in {profiles_path}. "
+            f"Available profiles include: {available}{more}"
+        )
     row = row.iloc[0]
     return (
         int(row["general_edit_start"]),
         int(row["general_edit_end"]),
         str(row["pam"]),
-        str(row["cas"]),
-        str(row["editing"]),
     )
