@@ -4,6 +4,11 @@ GPU-Accelerated Off-Target Base Editing Seeker for CRISPR-Cas9 base editors.
 
 BEguidedOFF searches the human genome for off-target sites where base editing is possible, using GPU acceleration for 2-bit packed genome matching. It is designed for batch processing of 100+ guide RNAs simultaneously and produces off-target calls with CCTOP penalty scores (or optionally Doench 2016 CFD scores), base-editing window filtering, and trinucleotide context annotation.
 
+Two search modes share one API:
+
+- **extensive** (GPU brute force via Numba CUDA) — exhaustive scan for every site with ≤ `max_mismatches`.
+- **fast** (CPU FM-index) — a sound filter at a CCTOP score cutoff; same remove/keep verdicts without a GPU, for web/service use.
+
 ---
 
 ## What it does
@@ -93,57 +98,110 @@ The profile file defines the editing window and PAM family for each base editor 
 
 ---
 
+## Data Files
+
+Reference data lives in `nogit/` (git-ignored): encoded genomes, FM-indexes and
+large inputs. The human reference used here is GRCh38 (Ensembl 115):
+
+```
+nogit/GRCh38.115/Homo_sapiens.GRCh38.dna.primary_assembly.fa   # source FASTA
+nogit/hg38_beguidedoff.npz                                     # extensive mode (2-bit .npz)
+nogit/hg38_beguidedoff.fmi                                     # fast mode (FM-index)
+```
+
+---
+
 ## One-Time Genome Encoding
 
-Before searching, encode the reference genome once:
+### Extensive mode (2-bit `.npz`)
 
 ```bash
 pixi run python -m beguidedoff.cli encode-genome \
-    --fasta relevant_files/Homo_sapiens.GRCh38.dna.primary_assembly.fa \
-    --output hg38_otbe.npz \
+    --fasta nogit/GRCh38.115/Homo_sapiens.GRCh38.dna.primary_assembly.fa \
+    --output nogit/hg38_beguidedoff.npz \
     --include-rc \
     --include-n-mask
 ```
 
-This produces `hg38_otbe.npz` containing:
+This produces `hg38_beguidedoff.npz` containing:
 - 2-bit packed forward strand (`~739 MB`)
 - Pre-computed reverse complement (`~739 MB`)
 - Chromosome index map and offsets
 - N-position mask
 
+### Fast mode (FM-index)
+
+```bash
+pixi run python -m beguidedoff.cli build-index \
+    --fasta nogit/GRCh38.115/Homo_sapiens.GRCh38.dna.primary_assembly.fa \
+    --output nogit/hg38_beguidedoff.fmi
+```
+
+The FM-index stores only the forward strand (~2–3 GB); the reverse strand is
+handled via reverse-complement anchors. It is memory-mapped at load time, so a
+search process needs little RAM regardless of genome size.
+
 ---
 
 ## Searching for Off-Targets
 
-### CLI
+### CLI — extensive mode (GPU)
 
 ```bash
 pixi run python -m beguidedoff.cli search \
-    --genome hg38_otbe.npz \
-    --guides relevant_files/input_example.tsv \
-    --max-mismatches 5 \
+    --mode extensive \
+    --genome nogit/hg38_beguidedoff.npz \
+    --guides nogit/relevant_files/input_example.tsv \
+    --max-mismatches 4 \
     --n-top 10 \
     --output results.tsv \
     --return-all
 ```
 
+### CLI — fast mode (CPU FM-index)
+
+```bash
+pixi run python -m beguidedoff.cli search \
+    --mode fast \
+    --index nogit/hg38_beguidedoff.fmi \
+    --guides nogit/relevant_files/input_example.tsv \
+    --search-cutoff 5.0 \
+    --n-top 10 \
+    --output results.tsv
+```
+
 Options:
-- `--max-mismatches N` — up to N mismatches (default: 4, max: 5 tested)
+- `--mode extensive|fast` — GPU brute force (default) or CPU FM-index filter
+- `--max-mismatches N` — extensive mode: up to N mismatches (default: 4, max: 5 tested)
+- `--search-cutoff X` — fast mode: CCTOP score cutoff; every site with score ≤ X is enumerated (default: **5.0**)
 - `--n-top N` — keep top N hits per guide (default: 3)
 - `--return-all` — return all off-targets instead of only top-N
-- `--count-score-threshold X` — CCTOP score threshold for counting relevant off-targets. Only editable off-targets with score ≤ X are tallied into the `n_offtargets_below_threshold` column (default: **15.0**)
+- `--count-score-threshold X` — CCTOP score threshold for counting relevant off-targets. Only editable off-targets with score ≤ X are tallied into the `n_offtargets_below_threshold` column (default: **5.0**). In fast mode a value above `--search-cutoff` widens the search region (slower); values above ~38 are not supported (the exact "cold" region becomes empty).
 - `--include-non-editable` — report off-targets even if no editable base is in the window
-- `--device cuda:0` — force CUDA; auto-detected otherwise
+- `--device cuda:0` — extensive mode: force CUDA; auto-detected otherwise
+
+### Mode semantics
+
+- **extensive** exhaustively scans every genome position on GPU; it reports every
+  site with ≤ `max_mismatches`, regardless of score.
+- **fast** is a sound *filter* at the score cutoff: it enumerates every site that
+  can score ≤ `search_cutoff` (the PAM-proximal positions of any such site must
+  match exactly). Guides with no hit at or below the cutoff are not in the
+  output ("passes filter"). Remove/keep verdicts therefore agree with extensive
+  mode at the same cutoff — without needing a GPU.
 
 ### Python API
 
 ```python
 from beguidedoff import beguidedoff
 
-# Initialize (device auto-detected: cuda:0 if available, else cpu)
-finder = beguidedoff("hg38_otbe.npz", max_mismatches=5)
+# Extensive mode (GPU; device auto-detected: cuda:0 if available)
+finder = beguidedoff(mode="extensive", genome_path="nogit/hg38_beguidedoff.npz", max_mismatches=5)
 
-# Search from TSV
+# Fast mode (CPU FM-index)
+finder = beguidedoff(mode="fast", index_path="nogit/hg38_beguidedoff.fmi", search_cutoff=5.0)
+
+# Search from TSV (identical call for both modes)
 df = finder.search(input_file="guides.tsv", return_all=True)
 
 # Or search from GuideInput objects directly
@@ -187,18 +245,27 @@ The default output is a long-format TSV with one row per off-target hit.
 
 ```
 beguidedoff/
-├── __init__.py
-├── cli.py               # argparse CLI
+├── __init__.py          # lazy mode factory (extensive/fast; no torch on import)
+├── cli.py               # argparse CLI (encode-genome, build-index, search, verify)
 ├── types.py             # GuideInput, OffTarget, GuideResult
 ├── encoding.py          # 2-bit DNA encoding, 40-bit guide packing
 ├── pam.py               # IUPAC PAM masks, guide grouping
-├── scoring.py           # Doench 2016 CFD scorer (T→U, reverse-complement lookup)
+├── scoring.py           # CCTOP score, Doench 2016 CFD scorer (T→U, RC lookup)
 ├── base_editing.py      # Editable-base window filtering, trinucleotide contexts
+├── regions.py           # score cutoff → cold/hot search regions (fast mode)
 ├── io.py                # TSV loading (preset-based or explicit), output formatting
 ├── genome_converter.py  # FASTA → .npz (forward + RC, chromosome index)
-├── finder.py            # beguidedoff class, CPU/GPU dual-strand search
-└── cuda_search.py       # Numba CUDA kernel (scans 2-bit genome in chunks)
+├── finder.py            # extensive mode: beguidedoff (CUDA only)
+├── cuda_search.py       # Numba CUDA kernel (scans 2-bit genome in chunks)
+└── fast/
+    ├── backend.py       # symbol codec (2-bit-compatible) + backend protocol
+    ├── fmindex.py       # sdsl-lite FM-index build/load wrapper
+    └── finder.py        # fast mode: beguidedofffast (CPU, streaming search)
 ```
+
+The sdsl-lite pybind11 binding for the fast mode lives in `csrc/fmindex_binding.cpp`
+and is compiled to `beguidedoff._fmindex` (built by default; the CUDA extension is
+built only with `BEGUIDEDOFF_CUDA=1` or when nvcc + torch are present).
 
 ### GPU kernel design
 
@@ -242,7 +309,11 @@ Search scales with the number of *unique* `(guide_seq, PAM)` pairs because ident
 PYTHONPATH=/data/lschmitt/apps/BEguidedOFF pixi run python -m pytest tests/ -v
 ```
 
-26 tests cover encoding round-trips, PAM validation, CFD scoring, base-editing window logic, genome conversion, exact-match exclusion, and end-to-end integration.
+65 tests cover encoding round-trips, PAM validation, CFD scoring, base-editing
+window logic, search-region derivation, genome conversion, fast-vs-brute-force
+equivalence, import hygiene (no torch/numba on import), and end-to-end
+integration for both modes. A captured test log is kept in
+`nogit/test_results.txt`.
 
 ---
 

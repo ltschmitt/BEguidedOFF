@@ -5,7 +5,21 @@ relevant_files/*
 *__pycache__*
 .pytest_cache/*
 *_otbe.npz
+*_beguidedoff.npz
 results*
 *.egg-info/
 session-bulges.md
 project.md
+nogit/*
+nogit
+
+# build artifacts
+build/
+dist/
+*.so
+!beguidedoff/_cuda.cpython-*.so
+*.fmi
+*.fmi.meta
+*.seq.tmp
+*.sdsl
+beguidedoff_cache_*

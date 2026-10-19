@@ -1,18 +1,18 @@
 [build-system]
-requires = ["setuptools>=82.0.1,<83", "torch>=2.5.1,<3", "numpy>=2.4.6,<3"]
+requires = ["setuptools>=82.0.1,<83", "pybind11>=2.10"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "beguidedoff"
-version = "0.1.0"
-description = "GPU-Accelerated Off-Target Base Editing Seeker"
+version = "0.2.0"
+description = "Off-target base-editing search (extensive GPU / fast CPU)"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "Lukas Schmitt", email = "lukas_theo.schmitt@tu-dresden.de"}
 ]
-keywords = ["CRISPR", "base-editing", "off-target", "GPU", "CUDA"]
+keywords = ["CRISPR", "base-editing", "off-target", "GPU", "CUDA", "FM-index"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -21,6 +21,28 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+]
+
+# Base install is the fast, CPU-only stack -- no torch/CUDA/numba.
+dependencies = [
+    "numpy>=2.4.6,<3",
+    "pandas>=3.0.3,<4",
+    "pysam>=0.24.0,<0.25",
+]
+
+[project.optional-dependencies]
+# The FM-index binding is a native extension (needs sdsl-lite at build time);
+# there are no extra PyPI packages to install for it.
+fast = []
+# The extensive GPU mode.  Build the CUDA extension with --no-build-isolation
+# after installing these.
+gpu = [
+    "torch>=2.5.1,<3",
+    "numba>=0.65.1,<0.66",
+]
+all = [
+    "torch>=2.5.1,<3",
+    "numba>=0.65.1,<0.66",
 ]
 
 [project.scripts]
@@ -39,6 +61,8 @@ pytorch-cuda = ">=12.4,<13"
 pytorch = ">=2.5.1,<3"
 setuptools = ">=82.0.1,<83"
 numba = ">=0.65.1,<0.66"
+sdsl-lite = ">=2.1.1,<3"
+pybind11 = ">=3.1.0,<4"
 
 [tool.pixi.tasks]
 beguidedoff = "python -m beguidedoff.cli"

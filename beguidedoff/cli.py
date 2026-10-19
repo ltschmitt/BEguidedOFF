@@ -2,13 +2,12 @@
 import argparse
 import logging
 import sys
-from pathlib import Path
 
 from beguidedoff import beguidedoff, genome_converter
 
 
 def cmd_encode_genome(args):
-    """Encode a FASTA genome to beguidedoff format."""
+    """Encode a FASTA genome to beguidedoff format (extensive mode)."""
     genome_converter.convert(
         fasta_path=args.fasta,
         output_path=args.output,
@@ -18,15 +17,35 @@ def cmd_encode_genome(args):
     )
 
 
+def cmd_build_index(args):
+    """Build a fast-mode FM-index from a FASTA genome."""
+    from beguidedoff.fast.fmindex import build_index
+
+    build_index(fasta_path=args.fasta, output_path=args.output, verbose=True)
+
+
 def cmd_search(args):
-    """Run off-target search."""
-    finder = beguidedoff(
-        genome_path=args.genome,
-        max_mismatches=args.max_mismatches,
-        device=args.device,
-        n_top_offtargets=args.n_top,
-        results_per_guide=args.results_per_guide,
-    )
+    """Run off-target search (extensive GPU or fast CPU)."""
+    if args.mode == "fast":
+        if not args.index:
+            raise SystemExit("--index is required for --mode fast")
+        finder = beguidedoff(
+            mode="fast",
+            index_path=args.index,
+            search_cutoff=args.search_cutoff,
+            n_top_offtargets=args.n_top,
+        )
+    else:
+        if not args.genome:
+            raise SystemExit("--genome is required for --mode extensive")
+        finder = beguidedoff(
+            mode="extensive",
+            genome_path=args.genome,
+            max_mismatches=args.max_mismatches,
+            device=args.device,
+            n_top_offtargets=args.n_top,
+            results_per_guide=args.results_per_guide,
+        )
 
     results = finder.search(
         input_file=args.guides,
@@ -56,29 +75,41 @@ def cmd_verify(args):
 def main():
     parser = argparse.ArgumentParser(
         prog="beguidedoff",
-        description="beguidedoff — GPU-Accelerated Off-Target Base Editing Seeker",
+        description="beguidedoff — off-target base-editing search (extensive GPU / fast CPU)",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # encode-genome
-    enc = subparsers.add_parser("encode-genome", help="Encode a FASTA genome")
+    # encode-genome (extensive mode)
+    enc = subparsers.add_parser("encode-genome", help="Encode a FASTA genome (.npz, extensive mode)")
     enc.add_argument("--fasta", required=True, help="Input FASTA file")
     enc.add_argument("--output", required=True, help="Output .npz path")
     enc.add_argument("--include-rc", action="store_true", default=True, help="Include reverse complement")
     enc.add_argument("--include-n-mask", action="store_true", default=True, help="Include N-mask")
     enc.set_defaults(func=cmd_encode_genome)
 
+    # build-index (fast mode)
+    bidx = subparsers.add_parser("build-index", help="Build an FM-index for fast mode")
+    bidx.add_argument("--fasta", required=True, help="Input FASTA file")
+    bidx.add_argument("--output", required=True, help="Output index path (e.g. hg38.fmi)")
+    bidx.set_defaults(func=cmd_build_index)
+
     # search
     srch = subparsers.add_parser("search", help="Search for off-targets")
-    srch.add_argument("--genome", required=True, help="Encoded genome .npz")
+    srch.add_argument("--mode", choices=["extensive", "fast"], default="extensive",
+                      help="Search mode (default: extensive)")
+    srch.add_argument("--genome", default=None, help="Encoded genome .npz (extensive mode)")
+    srch.add_argument("--index", default=None, help="FM-index path (fast mode)")
     srch.add_argument("--guides", required=True, help="Guide TSV input")
-    srch.add_argument("--max-mismatches", type=int, default=4, help="Max mismatches")
+    srch.add_argument("--max-mismatches", type=int, default=4, help="Max mismatches (extensive)")
+    srch.add_argument("--search-cutoff", type=float, default=5.0,
+                      help="CCTOP score cutoff T for fast mode (default: 5.0)")
     srch.add_argument("--scoring", choices=["cctop", "cfd"], default="cctop", help="Scoring method (default: CCTOP)")
     srch.add_argument("--device", default=None, help="torch device (cuda:0 or cpu)")
     srch.add_argument("--n-top", type=int, default=3, help="Top N off-targets per guide")
     srch.add_argument("--results-per-guide", type=int, default=10240, help="Max off-target hits stored per guide per chunk (default: 10240)")
     srch.add_argument("--return-all", action="store_true", help="Return all off-targets above threshold")
-    srch.add_argument("--count-score-threshold", type=float, default=15.0, help="CCTOP score threshold for counting relevant off-targets (<= threshold, default: 15.0)")
+    srch.add_argument("--count-score-threshold", type=float, default=5.0,
+                      help="CCTOP score threshold for counting relevant off-targets (<= threshold, default: 5.0)")
     srch.add_argument("--output", default=None, help="Output TSV file")
     srch.add_argument("--include-non-editable", action="store_true", help="Include off-targets without editable bases (also implied by --return-all)")
     srch.add_argument("--presets-path", default=None, help="Path to base_editor_profiles.tsv (default: base_editor_profiles.tsv in app root)")

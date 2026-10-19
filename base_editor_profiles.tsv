@@ -6,8 +6,8 @@ ABE-NW1	ABE	3	8	4	7	NGG	SpCas9	Valdez et al, 2025
 ABE-Umax	ABE	3	11	4	6	NGG	SpCas9	Qin et al, 2024
 ABE-Umax-ex1-rest1	ABE	4	12	4	8	NGG	SpCas9	Qin et al, 2024
 ABE-Umax-ex2-rest1	ABE	12	15	14	15	NGG	SpCas9	Qin et al, 2024
-spABE3030	ABE	4	8	5	6	NGG	SpCas9	Schmitt et al, 2023
-Sa-ABE8e	ABE	5	13	5	13	NNGRRT	SaCas9	Richter et al, 2020
+SpABE3030	ABE	4	8	5	6	NGG	SpCas9	Schmitt et al, 2023
+SaABE8e	ABE	5	13	5	13	NNGRRT	SaCas9	Richter et al, 2020
 SaKKH-ABE8e	ABE	8	14	8	14	NNNRRT	SaCas9	Richter et al, 2020
 NG-ABE8e	ABE	2	13	3	8	NGN	SpG / SpCas9-NG	Richter et al, 2020; Chen et al, 2023
 NG-ABE8e-N108Q	ABE	3	8	4	6	NGN	SpG / SpCas9-NG	Chen et al, 2023

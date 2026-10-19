@@ -19,7 +19,7 @@ _PROFILE_TSV = (
     "high_edit_start\thigh_edit_end\tpam\tcas\tsource\n"
     "ABE8e\tABE\t2\t13\t3\t8\tNGG\tSpCas9\tRichter2020\n"
     "CBE6d\tCBE\t2\t10\t6\t6\tNGG\tSpCas9\tZhang2024\n"
-    "Sa-ABE8e\tABE\t5\t13\t5\t13\tNNGRRT\tSaCas9\tRichter2020\n"
+    "SaABE8e\tABE\t5\t13\t5\t13\tNNGRRT\tSaCas9\tRichter2020\n"
 )
 
 
@@ -97,17 +97,17 @@ def test_load_guides_preset_format_new_columns():
 
 
 def test_load_guides_sa_abe_renamed_profile():
-    """The renamed 'Sa-ABE8e' profile loads correctly (was 'saABE8e')."""
+    """The renamed 'SaABE8e' profile loads correctly (was 'saABE8e')."""
     with tempfile.TemporaryDirectory() as td:
         profiles_path = _write_profile(Path(td) / "profiles.tsv")
         tsv = _make_guides_tsv(
             Path(td) / "guides.tsv",
             "guide_rna_sequence\tbase_editor",
-            ["ACGTACGTACGTACGTACGT\tSa-ABE8e"],
+            ["ACGTACGTACGTACGTACGT\tSaABE8e"],
         )
         guides = load_guides_from_tsv(str(tsv), presets_path=str(profiles_path))
         assert len(guides) == 1
-        assert guides[0].base_editor == "Sa-ABE8e"
+        assert guides[0].base_editor == "SaABE8e"
         assert guides[0].pam == "NNGRRT"
         assert guides[0].editor_type == "ABE"
         assert guides[0].edit_window_start == 5

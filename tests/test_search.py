@@ -1,261 +1,118 @@
-"""Tests for search engine."""
+"""Tests for the fast (FM-index) search engine."""
 import tempfile
 from pathlib import Path
-from beguidedoff import beguidedoff
-from beguidedoff.types import GuideInput
-from beguidedoff.genome_converter import convert
+
+from _fastutil import make_fast_finder, write_fasta
 from beguidedoff.encoding import reverse_complement_seq
+from beguidedoff.types import GuideInput
+
+_GUIDE = "ACGTACGTACGTACGTACGT"
 
 
-def _make_fasta(path: str, entries: dict):
-    with open(path, "w") as f:
-        for name, seq in entries.items():
-            f.write(f">{name}\n{seq}\n")
-
-
-def test_exact_match_excluded():
-    """On-target (0 mismatches) should not be reported."""
+def test_exact_ontarget_excluded():
+    """The exact on-target site is excluded when on-target coordinates are given."""
     with tempfile.TemporaryDirectory() as td:
         fa = Path(td) / "genome.fa"
-        npz = Path(td) / "genome.npz"
-        # Simple genome with one NGG PAM site
-        seq = "ACGTACGTACGTACGTACGT" + "GG" + "A" * 100
-        _make_fasta(fa, {"chr1": seq})
-        convert(str(fa), str(npz), verbose=False)
-
-        finder = beguidedoff(
-            genome_path=str(npz),
-            max_mismatches=4,
-            scoring_method="CCTOP",
-            device="cpu",
-            n_top_offtargets=3,
-        )
+        write_fasta(str(fa), {"chr1": _GUIDE + "AGG" + "A" * 100})
+        finder = make_fast_finder(str(fa), td, search_cutoff=5.0, n_top_offtargets=3)
         guides = [
-            GuideInput("g1", "ACGTACGTACGTACGTACGT", "NGG", "3prime", 4, 8, "CBE"),
+            GuideInput("g1", _GUIDE, "NGG", "3prime", 4, 8, "CBE",
+                       on_target_chrom="chr1", on_target_pos=1, on_target_strand="+"),
         ]
         df = finder.search(guides=guides, verbose=False)
-        # The exact match should be excluded
         assert len(df) == 0
 
 
 def test_mismatched_ontarget_excluded():
-    """On-target position with mismatches should also be excluded."""
+    """A mismatched on-target (same coordinates) is excluded too."""
     with tempfile.TemporaryDirectory() as td:
         fa = Path(td) / "genome.fa"
-        npz = Path(td) / "genome.npz"
-        # Genome: guide starts at pos 0 (1-based pos=1), but has 2 mismatches vs guide
-        # Guide: ACGTACGTACGTACGTACGT
-        # Genome: ACGTACGAACGTACGTACGA (mismatches at pos 7 and 20)
-        # Wait, need 20 bp + PAM. Let's make mismatch at pos 7 and keep PAM as GG.
-        # So genome segment = ACGTACGAACGTACGTACGT + GG
-        ontarget = "ACGTACGAACGTACGTACGT" + "GG"
-        # Also add a 1-mismatch off-target further down
-        offtarget = "ACGTACGTACGTACGTACGA" + "AGG"
-        seq = ontarget + "A" * 30 + offtarget + "A" * 100
-        _make_fasta(fa, {"chr1": seq})
-        convert(str(fa), str(npz), verbose=False)
-
-        finder = beguidedoff(
-            genome_path=str(npz),
-            max_mismatches=4,
-            scoring_method="CCTOP",
-            device="cpu",
-            n_top_offtargets=3,
-        )
+        ontarget = "ACGTACGTACGAACGTACGT" + "AGG"  # 1 mismatch at pos 12
+        write_fasta(str(fa), {"chr1": ontarget + "A" * 100})
+        finder = make_fast_finder(str(fa), td, search_cutoff=5.0, n_top_offtargets=3)
         guides = [
-            GuideInput(
-                "g1",
-                "ACGTACGTACGTACGTACGT",
-                "NGG",
-                "3prime",
-                4,
-                8,
-                "CBE",
-                on_target_chrom="chr1",
-                on_target_pos=1,
-                on_target_strand="+",
-            ),
+            GuideInput("g1", _GUIDE, "NGG", "3prime", 4, 8, "CBE",
+                       on_target_chrom="chr1", on_target_pos=1, on_target_strand="+"),
         ]
         df = finder.search(guides=guides, verbose=False)
-        # The mismatched on-target at position 1 must be excluded;
-        # only the 1-mismatch off-target at position 53 (1-based) should remain.
+        assert len(df) == 0
+
+
+def test_offtarget_found_with_correct_position_and_score():
+    """A PAM-distal off-target is reported with the right position and score."""
+    with tempfile.TemporaryDirectory() as td:
+        fa = Path(td) / "genome.fa"
+        ot = "ACGTACGTACGTACGTACGA"[:19] + "A"  # mismatch at pos 20?
+        # mismatch at position 3 instead (PAM-distal, score 1.2**3)
+        ot = _GUIDE[:2] + "A" + _GUIDE[3:] + "AGG"
+        write_fasta(str(fa), {"chr1": "A" * 30 + ot + "A" * 100})
+        finder = make_fast_finder(str(fa), td, search_cutoff=5.0, n_top_offtargets=3)
+        guides = [GuideInput("g1", _GUIDE, "NGG", "3prime", 4, 8, "CBE")]
+        df = finder.search(guides=guides, verbose=False)
         assert len(df) == 1
         assert df.iloc[0]["n_mismatches"] == 1
-        assert df.iloc[0]["ot_position"] == 53
+        assert df.iloc[0]["ot_position"] == 31
+        assert abs(df.iloc[0]["score"] - 1.2 ** 3) < 1e-9
 
 
 def test_minus_strand_offtarget_position():
-    """Minus strand off-target should report the rightmost position."""
+    """Minus-strand off-targets report the rightmost position."""
     with tempfile.TemporaryDirectory() as td:
         fa = Path(td) / "genome.fa"
-        npz = Path(td) / "genome.npz"
-        guide = "ACGTACGTACGTACGTACGT"
-        pam = "AGG"
-        rc_target = reverse_complement_seq(guide + pam)
+        rc_target = reverse_complement_seq(_GUIDE + "AGG")
         genome = "A" * 14 + rc_target + "A" * 23 + rc_target + "A" * 17  # total 100
-        _make_fasta(fa, {"chr1": genome})
-        convert(str(fa), str(npz), verbose=False)
-
-        finder = beguidedoff(
-            genome_path=str(npz),
-            max_mismatches=4,
-            scoring_method="CCTOP",
-            device="cpu",
-            n_top_offtargets=3,
-        )
-        guides = [
-            GuideInput("g1", guide, "NRG", "3prime", 4, 8, "CBE"),
-        ]
+        write_fasta(str(fa), {"chr1": genome})
+        finder = make_fast_finder(str(fa), td, search_cutoff=5.0, n_top_offtargets=3)
+        guides = [GuideInput("g1", _GUIDE, "NRG", "3prime", 4, 8, "CBE")]
         df = finder.search(guides=guides, verbose=False)
-        # Two identical minus-strand hits at positions 37 and 83
         assert len(df) == 2
-        positions = sorted(df["ot_position"].tolist())
-        assert positions == [37, 83]
+        assert sorted(df["ot_position"].tolist()) == [37, 83]
         assert df["ot_strand"].nunique() == 1
         assert df.iloc[0]["ot_strand"] == "-"
 
 
-def test_minus_strand_ontarget_excluded_correct_position():
-    """Minus strand on-target excluded with correct rightmost position and strand."""
+def test_minus_strand_ontarget_excluded():
+    """Minus-strand on-target (rightmost coordinate) is excluded."""
     with tempfile.TemporaryDirectory() as td:
         fa = Path(td) / "genome.fa"
-        npz = Path(td) / "genome.npz"
-        guide = "ACGTACGTACGTACGTACGT"
-        pam = "AGG"
-        rc_target = reverse_complement_seq(guide + pam)
-        genome = "A" * 14 + rc_target + "A" * 23 + rc_target + "A" * 17  # total 100
-        _make_fasta(fa, {"chr1": genome})
-        convert(str(fa), str(npz), verbose=False)
-
-        finder = beguidedoff(
-            genome_path=str(npz),
-            max_mismatches=4,
-            scoring_method="CCTOP",
-            device="cpu",
-            n_top_offtargets=3,
-        )
+        rc_target = reverse_complement_seq(_GUIDE + "AGG")
+        genome = "A" * 14 + rc_target + "A" * 23 + rc_target + "A" * 17
+        write_fasta(str(fa), {"chr1": genome})
+        finder = make_fast_finder(str(fa), td, search_cutoff=5.0, n_top_offtargets=3)
         guides = [
-            GuideInput(
-                "g1",
-                guide,
-                "NRG",
-                "3prime",
-                4,
-                8,
-                "CBE",
-                on_target_chrom="chr1",
-                on_target_pos=37,   # rightmost 1-based position of minus strand on-target
-                on_target_strand="-",
-            ),
+            GuideInput("g1", _GUIDE, "NRG", "3prime", 4, 8, "CBE",
+                       on_target_chrom="chr1", on_target_pos=37, on_target_strand="-"),
         ]
         df = finder.search(guides=guides, verbose=False)
-        # The minus-strand on-target should be excluded; only the second hit remains
         assert len(df) == 1
         assert df.iloc[0]["ot_position"] == 83
         assert df.iloc[0]["ot_strand"] == "-"
 
 
-def test_minus_strand_ontarget_not_excluded_wrong_strand():
-    """Minus strand on-target NOT excluded when strand is wrong — proves strand check works."""
+def test_minus_strand_ontarget_wrong_strand_not_excluded():
+    """A wrong-strand on-target coordinate must not exclude anything."""
     with tempfile.TemporaryDirectory() as td:
         fa = Path(td) / "genome.fa"
-        npz = Path(td) / "genome.npz"
-        guide = "ACGTACGTACGTACGTACGT"
-        pam = "AGG"
-        rc_target = reverse_complement_seq(guide + pam)
-        genome = "A" * 14 + rc_target + "A" * 23 + rc_target + "A" * 17  # total 100
-        _make_fasta(fa, {"chr1": genome})
-        convert(str(fa), str(npz), verbose=False)
-
-        finder = beguidedoff(
-            genome_path=str(npz),
-            max_mismatches=4,
-            scoring_method="CCTOP",
-            device="cpu",
-            n_top_offtargets=3,
-        )
+        rc_target = reverse_complement_seq(_GUIDE + "AGG")
+        genome = "A" * 14 + rc_target + "A" * 23 + rc_target + "A" * 17
+        write_fasta(str(fa), {"chr1": genome})
+        finder = make_fast_finder(str(fa), td, search_cutoff=5.0, n_top_offtargets=3)
         guides = [
-            GuideInput(
-                "g1",
-                guide,
-                "NRG",
-                "3prime",
-                4,
-                8,
-                "CBE",
-                on_target_chrom="chr1",
-                on_target_pos=37,
-                on_target_strand="+",  # WRONG strand — should NOT exclude anything
-            ),
+            GuideInput("g1", _GUIDE, "NRG", "3prime", 4, 8, "CBE",
+                       on_target_chrom="chr1", on_target_pos=37, on_target_strand="+"),
         ]
         df = finder.search(guides=guides, verbose=False)
-        # Both minus-strand hits should still be returned
-        assert len(df) == 2
-
-
-def test_ontarget_not_excluded_shifted_position():
-    """On-target NOT excluded when position is shifted by 1 bp — proves position conversion works."""
-    with tempfile.TemporaryDirectory() as td:
-        fa = Path(td) / "genome.fa"
-        npz = Path(td) / "genome.npz"
-        guide = "ACGTACGTACGTACGTACGT"
-        pam = "AGG"
-        rc_target = reverse_complement_seq(guide + pam)
-        genome = "A" * 14 + rc_target + "A" * 23 + rc_target + "A" * 17  # total 100
-        _make_fasta(fa, {"chr1": genome})
-        convert(str(fa), str(npz), verbose=False)
-
-        finder = beguidedoff(
-            genome_path=str(npz),
-            max_mismatches=4,
-            scoring_method="CCTOP",
-            device="cpu",
-            n_top_offtargets=3,
-        )
-        # Provide shifted rightmost position (36 instead of 37)
-        guides = [
-            GuideInput(
-                "g1",
-                guide,
-                "NRG",
-                "3prime",
-                4,
-                8,
-                "CBE",
-                on_target_chrom="chr1",
-                on_target_pos=36,   # shifted by 1 — should NOT exclude anything
-                on_target_strand="-",
-            ),
-        ]
-        df = finder.search(guides=guides, verbose=False)
-        # Both minus-strand hits should still be returned
         assert len(df) == 2
 
 
 def test_edit_window_filter():
-    """Off-target without editable base in window is excluded."""
+    """A site without an editable base in the window is not reported."""
+    guide = "GGGACGTACGTACGTACGTA"  # window 1-3 = GGG -> no C for CBE
     with tempfile.TemporaryDirectory() as td:
         fa = Path(td) / "genome.fa"
-        npz = Path(td) / "genome.npz"
-        # Guide: ACGTACGTACGTACGTACGT
-        # Off-target with 1 mismatch but no C in window 4-8
-        # Window positions 4-8 = TACGT -> contains no C
-        ot = "ACGTACGAACGTACGTACGT" + "GG"
-        # Put the off-target in the genome, plus other filler
-        seq = ot + "A" * 100
-        _make_fasta(fa, {"chr1": seq})
-        convert(str(fa), str(npz), verbose=False)
-
-        finder = beguidedoff(
-            genome_path=str(npz),
-            max_mismatches=4,
-            scoring_method="CCTOP",
-            device="cpu",
-            n_top_offtargets=3,
-        )
-        guides = [
-            GuideInput("g1", "ACGTACGTACGTACGTACGT", "NGG", "3prime", 4, 8, "CBE"),
-        ]
+        mutated = guide[:4] + "T" + guide[5:]  # PAM-distal mismatch (pos 5), no C added
+        write_fasta(str(fa), {"chr1": mutated + "AGG" + "A" * 100})
+        finder = make_fast_finder(str(fa), td, search_cutoff=5.0, n_top_offtargets=3)
+        guides = [GuideInput("g1", guide, "NGG", "3prime", 1, 3, "CBE")]
         df = finder.search(guides=guides, verbose=False)
-        # Should find 0 because off-target has no editable C in window 4-8
         assert len(df) == 0

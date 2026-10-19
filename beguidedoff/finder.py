@@ -19,7 +19,6 @@ from beguidedoff.encoding import (
     encode_guide_64bit,
     extract_window,
     decode_dna,
-    hamming_distance_2bit,
     mismatch_positions_2bit,
     reverse_complement_seq,
 )
@@ -85,127 +84,6 @@ class _ScanGuide:
     on_target_chrom_idx: Optional[int] = None
     on_target_local_pos: Optional[int] = None
     on_target_strand: Optional[str] = None
-
-
-# ---------------------------------------------------------------------------
-# CPU strand search
-# ---------------------------------------------------------------------------
-
-def _search_strand_cpu(
-    genome_packed: np.ndarray,
-    total_bp: int,
-    scan_guides: List[_ScanGuide],
-    pam_masks: dict,
-    strand: str,
-    max_mismatches: int,
-    chrom_offsets: np.ndarray,
-    chrom_lengths: np.ndarray,
-    chrom_names: np.ndarray,
-) -> dict:
-    """CPU search on one strand. Returns dict scan_key -> list of raw hits.
-
-    Each raw hit is a dict with keys: position (0-based global), n_mismatches,
-    offtarget_seq, pam_seq.  Chromosome, scoring, and on-target filtering are
-    done later.
-    """
-    results: dict = {sg: [] for sg in scan_guides}
-    guide_encoded = {sg: encode_guide_64bit(encode_dna(sg.guide_seq)) for sg in scan_guides}
-
-    pam_lens = {sg: len(sg.pam) for sg in scan_guides}
-
-    max_pam_len = max(pam_lens.values())
-    window_needed = 20 + max_pam_len
-
-    decode_map = {0: "A", 1: "C", 2: "G", 3: "T"}
-
-    for pos in range(0, total_bp - window_needed):
-        for sg in scan_guides:
-            pam_len = pam_lens[sg]
-            pam_start = pos + 20
-            guide_start = pos
-
-            if pam_start + pam_len > total_bp:
-                continue
-            if guide_start + 20 > total_bp:
-                continue
-
-            # PAM match
-            pam_mask = pam_masks[sg]
-            pam_ok = True
-            for i in range(pam_len):
-                gpos = pam_start + i
-                word_idx = gpos // 16
-                bit_offset = (gpos % 16) * 2
-                nuc_2bit = int((genome_packed[word_idx] >> bit_offset) & 0x3)
-                if not ((1 << nuc_2bit) & pam_mask[i]):
-                    pam_ok = False
-                    break
-            if not pam_ok:
-                continue
-
-            # Extract guide window
-            window = np.zeros(20, dtype=np.uint8)
-            for i in range(20):
-                gpos = guide_start + i
-                word_idx = gpos // 16
-                bit_offset = (gpos % 16) * 2
-                window[i] = int((genome_packed[word_idx] >> bit_offset) & 0x3)
-
-            window_val = encode_guide_64bit(window)
-            gval = guide_encoded[sg]
-            n_mm = hamming_distance_2bit(gval, window_val, length=20)
-
-            if n_mm > max_mismatches:
-                continue
-
-            # Convert guide_start to leftmost forward coordinate for on-target check
-            if strand == "+":
-                leftmost_pos = guide_start
-            else:
-                leftmost_pos = _rc_pos_to_forward(
-                    guide_start, pam_len, chrom_offsets, chrom_lengths
-                )
-
-            # Exclude on-target regardless of mismatch count
-            if sg.on_target_chrom_idx is not None:
-                chrom_idx, local_pos = _position_to_chrom(
-                    leftmost_pos, chrom_offsets, chrom_lengths
-                )
-                if (
-                    chrom_idx == sg.on_target_chrom_idx
-                    and local_pos == sg.on_target_local_pos
-                    and strand == sg.on_target_strand
-                ):
-                    continue
-
-            # Report position: 0-based leftmost for +, 0-based rightmost for -
-            if strand == "+":
-                report_pos_0based = guide_start
-            else:
-                report_pos_0based = leftmost_pos + 20 + pam_len - 1
-
-            offtarget_seq = decode_dna(window)
-
-            # Full genomic PAM for output
-            genomic_pam = ""
-            for i in range(pam_len):
-                gpos = pam_start + i
-                word_idx = gpos // 16
-                bit_offset = (gpos % 16) * 2
-                nuc_2bit = int((genome_packed[word_idx] >> bit_offset) & 0x3)
-                genomic_pam += decode_map[nuc_2bit]
-
-            results[sg].append(
-                {
-                    "position": report_pos_0based,  # 0-based global
-                    "n_mismatches": n_mm,
-                    "offtarget_seq": offtarget_seq,
-                    "genomic_pam": genomic_pam,
-                    "strand": strand,
-                }
-            )
-
-    return results
 
 
 # ---------------------------------------------------------------------------
@@ -345,6 +223,15 @@ class beguidedoff:
         if device is None:
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
+
+        if self.device.type != "cuda" or not _HAS_NUMBA_CUDA:
+            raise RuntimeError(
+                "Extensive mode requires a CUDA GPU (torch reports device "
+                f"'{self.device}' and numba CUDA is "
+                f"{'available' if _HAS_NUMBA_CUDA else 'unavailable'}). "
+                "Use the fast CPU mode instead: "
+                "`beguidedoff(mode='fast', index_path=...)`."
+            )
 
         self.genome_data = load_genome(genome_path)
         self.total_bp = self.genome_data["total_bp"]
@@ -535,25 +422,26 @@ class beguidedoff:
                 len(guides),
             )
 
-        if self.device.type == "cuda" and _HAS_NUMBA_CUDA:
-            if verbose:
-                log.info("Running GPU search on %s ...", self.device)
-            raw_hits_dict, overflow = self._search_gpu(
-                scan_guides, mapping, log=log, verbose=verbose
+        if self.device.type != "cuda" or not _HAS_NUMBA_CUDA:
+            raise RuntimeError(
+                "Extensive mode requires a CUDA GPU (torch reports device "
+                f"'{self.device}' and numba CUDA is "
+                f"{'available' if _HAS_NUMBA_CUDA else 'unavailable'}). "
+                "Use the fast CPU mode instead: "
+                "`beguidedoff(mode='fast', index_path=...)`."
             )
-            for sg, ovf in overflow.items():
-                if ovf:
-                    warnings.warn(
-                        f"Hit buffer overflow for guide {sg.guide_seq} "
-                        f"(PAM={sg.pam}). Some off-targets may be truncated. "
-                        f"Consider increasing results_per_guide (current: {self.results_per_guide})."
-                    )
-        else:
-            if verbose:
-                log.info("CUDA not available, running CPU search (this will be slow) ...")
-            raw_hits_dict = self._search_cpu(
-                scan_guides, mapping, log=log, verbose=verbose
-            )
+        if verbose:
+            log.info("Running GPU search on %s ...", self.device)
+        raw_hits_dict, overflow = self._search_gpu(
+            scan_guides, mapping, log=log, verbose=verbose
+        )
+        for sg, ovf in overflow.items():
+            if ovf:
+                warnings.warn(
+                    f"Hit buffer overflow for guide {sg.guide_seq} "
+                    f"(PAM={sg.pam}). Some off-targets may be truncated. "
+                    f"Consider increasing results_per_guide (current: {self.results_per_guide})."
+                )
 
         group_results, below_threshold_counts = self._process_raw_hits(
             raw_hits_dict, mapping, count_score_threshold, effective_include_non_editable
@@ -564,7 +452,9 @@ class beguidedoff:
             gid = g.guide_id
             hits = group_results.get(gid, [])
             # CCTOP: lower = more concerning off-target (sort ascending)
-            hits.sort(key=lambda x: x.score)
+            # Canonical tie-break so top-N is deterministic and identical
+            # between modes when several hits share the same score.
+            hits.sort(key=lambda x: (x.score, x.chromosome, x.position, x.strand))
             if not return_all:
                 hits = hits[: self.n_top_offtargets]
             n_below = below_threshold_counts.get(gid, 0)
@@ -579,41 +469,6 @@ class beguidedoff:
             if verbose:
                 log.info("Wrote results to %s", output_file)
         return df
-
-    def _search_cpu(
-        self,
-        scan_guides: List[_ScanGuide],
-        mapping: Dict[_ScanGuide, List[GuideInput]],
-        log: Optional[logging.Logger],
-        verbose: bool,
-    ) -> Dict[_ScanGuide, List[dict]]:
-        """CPU search across all PAM groups."""
-        pam_masks = {sg: encode_pam_mask(sg.pam) for sg in scan_guides}
-
-        all_raw: Dict[_ScanGuide, List[dict]] = {sg: [] for sg in scan_guides}
-
-        strands = [("+", self.genome_data["genome_forward"])]
-        if self.genome_rc_t is not None and "genome_rc" in self.genome_data:
-            strands.append(("-", self.genome_data["genome_rc"]))
-
-        for strand_label, genome_packed in strands:
-            if verbose:
-                log.info("  Searching %s strand ...", strand_label)
-            strand_results = _search_strand_cpu(
-                genome_packed,
-                self.total_bp,
-                scan_guides,
-                pam_masks,
-                strand_label,
-                self.max_mismatches,
-                self.chrom_offsets,
-                self.chrom_lengths,
-                self.genome_data["chrom_names"],
-            )
-            for sg, hits in strand_results.items():
-                all_raw[sg].extend(hits)
-
-        return all_raw
 
     def _search_gpu(
         self,
