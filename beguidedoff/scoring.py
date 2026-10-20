@@ -115,8 +115,9 @@ def calculate_cctop_score(mismatch_positions: List[int]) -> float:
     (1-indexed from the 5' end of the 20 bp guide). PAM mismatches are
     ignored and should not be included in *mismatch_positions*.
 
-    Lower scores mean more concerning off-targets (fewer / proximal
-    mismatches). Higher scores mean mismatches further from the PAM.
+    Lower scores mean more concerning off-targets (fewer mismatches, and
+    mismatches far from the PAM). Higher scores mean PAM-proximal
+    mismatches, which the model penalizes most heavily.
 
     Args:
         mismatch_positions: 1-indexed mismatch positions (1 = 5' end).
