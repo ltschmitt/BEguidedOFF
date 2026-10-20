@@ -90,10 +90,10 @@ def derive_regions(cutoff: float, guide_length: int = GUIDE_LENGTH) -> SearchReg
         fuzzy (hot) positions and the hot mismatch budget.
 
     Raises:
-        ValueError: If *cutoff* is not positive.
+        ValueError: If *cutoff* is negative.
     """
-    if cutoff <= 0:
-        raise ValueError(f"cutoff must be positive, got {cutoff}")
+    if cutoff < 0:
+        raise ValueError(f"cutoff must be non-negative, got {cutoff}")
 
     cold = []
     hot = []

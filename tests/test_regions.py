@@ -54,4 +54,14 @@ def test_position_cost_monotonic():
 
 def test_invalid_cutoff():
     with pytest.raises(ValueError):
-        derive_regions(0.0)
+        derive_regions(-1.0)
+
+
+def test_zero_cutoff_is_exact_match_only():
+    """A cutoff of 0 degenerates to a fully cold guide (perfect matches only)."""
+    r = derive_regions(0.0)
+    assert r.cold == tuple(range(1, 21))
+    assert r.hot == ()
+    assert r.budget == 0
+    # Only a 0-mismatch hit can pass: cheapest 1-mismatch score exceeds 0.
+    assert r.min_cost(1) > 0.0
