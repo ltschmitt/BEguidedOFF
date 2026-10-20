@@ -106,7 +106,7 @@ def main():
     srch.add_argument("--scoring", choices=["cctop", "cfd"], default="cctop", help="Scoring method (default: CCTOP)")
     srch.add_argument("--device", default=None, help="torch device (cuda:0 or cpu)")
     srch.add_argument("--n-top", type=int, default=3, help="Top N off-targets per guide")
-    srch.add_argument("--results-per-guide", type=int, default=10240, help="Max off-target hits stored per guide per chunk (default: 10240)")
+    srch.add_argument("--results-per-guide", type=int, default=10240, help="Initial off-target hit buffer per guide; overflowing guides are re-scanned with a larger buffer automatically (default: 10240)")
     srch.add_argument("--return-all", action="store_true", help="Return all off-targets above threshold")
     srch.add_argument("--count-score-threshold", type=float, default=5.0,
                       help="CCTOP score threshold for counting relevant off-targets (<= threshold, default: 5.0)")

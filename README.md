@@ -273,8 +273,8 @@ built only with `BEGUIDEDOFF_CUDA=1` or when nvcc + torch are present).
 - **Guide packing:** 40-bit integer for 20-base sequence
 - **Mismatch detection:** XOR + popcount on the 40-bit value
 - **PAM matching:** IUPAC 4-bit mask per position, checked before guide comparison
-- **Chunking:** Genome scanned in 200 Mbp chunks to manage GPU memory
-- **Buffer limit:** `results_per_guide=10240` hits stored per guide per chunk; overflow triggers a `UserWarning`
+- **Chunking:** Genome scanned in 200 Mbp chunks to manage GPU memory; guides split automatically into launches of ≤2,048 unique scan keys (shared-memory budget)
+- **Buffer limit:** `results_per_guide=10240` initial raw hits per guide. A guide that overflows is **re-scanned automatically** with the buffer raised ×16 (up to 2,621,440) and its hits replaced — the returned hit list is exact. A guide that still overflows at that ceiling fails with a clear `RuntimeError` instead of returning silent truncations; use the fast CPU mode for such guides.
 
 ---
 
@@ -286,9 +286,9 @@ BEguidedOFF was validated against [Cas-OFFinder](https://github.com/snugel/cas-o
 |-----------|--------|-----------|------------------------|
 | NGG | 233 | ~434K | **99.9998%** (1 difference: N in genome) |
 | NNGRRT | 7 | ~4.7K | **100%** |
-| NNNRRT | 121 | ~814K | **100% per guide** (1 repetitive guide overflows buffer) |
+| NNNRRT | 121 | ~814K | **100% per guide** (1 repetitive guide enumerates fully via the automatic re-scan) |
 
-A single guide (`ATCGAGACCATCCTGGCTAA`) is a 7 bp tandem repeat producing >500K off-targets; the GPU buffer of 10,240 hits truncates it. Increase `--results-per-guide` (or pass `results_per_guide` to `beguidedoff`) if needed for extremely repetitive guides.
+A single guide (`ATCGAGACCATCCTGGCTAA`) is a 7 bp tandem repeat producing >500K off-targets. The GPU mode re-scans such guides automatically with an escalating hit buffer (10,240 → 163,840 → 2,621,440) so they are enumerated completely; beyond the ceiling it raises a clear error — `--results-per-guide` (or `results_per_guide` on the `beguidedoff` factory) only changes the *initial* buffer size.
 
 ### Speed comparison
 
