@@ -546,12 +546,13 @@ class beguidedoff:
                 )
             results_per_guide = min(results_per_guide * 16, _MAX_RESULTS_PER_GUIDE)
             if log is not None:
+                names = ", ".join(sorted({sg.guide_seq for sg in pending})[:5])
                 log.warning(
-                    "Hit buffer overflow for %d guide(s) at "
-                    "results_per_guide=%s; re-scanning them with "
-                    "results_per_guide=%d.",
+                    "Hit buffer overflow for %d guide(s) at results_per_guide=%s "
+                    "(e.g. %s); re-scanning them with results_per_guide=%d.",
                     len(pending),
                     self.results_per_guide,
+                    names,
                     results_per_guide,
                 )
 
