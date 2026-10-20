@@ -94,19 +94,16 @@ class beguidedofffast:
 
     def __init__(
         self,
-        index_path: str,
+        index_path: str = "",
         search_cutoff: float = 5.0,
         scoring_method: str = "CCTOP",
         n_top_offtargets: int = 3,
         max_hits_per_anchor: int = 10000,
         verbose: bool = False,
+        index: Optional["SdslGenomeIndex"] = None,
     ):
         if scoring_method.upper() != "CCTOP":
             raise ValueError("fast mode only supports scoring_method='CCTOP'")
-
-        # Lazy import so that `import beguidedoff.fast` works without the
-        # compiled extension (it is only required to actually run a search).
-        from beguidedoff.fast.fmindex import SdslGenomeIndex
 
         self.index_path = str(index_path)
         self.search_cutoff = float(search_cutoff)
@@ -115,7 +112,21 @@ class beguidedofffast:
         self.max_hits_per_anchor = int(max_hits_per_anchor)
         self.verbose = verbose
 
-        self._index = SdslGenomeIndex.load(self.index_path)
+        if index is not None:
+            # A preloaded index handle (e.g. from a server-side cache). The
+            # handle is shared: locate/extract are read-only, so concurrent
+            # finders may use the same object.
+            self._index = index
+        else:
+            # Lazy import so that `import beguidedoff.fast` works without the
+            # compiled extension (it is only required to actually run a search).
+            from beguidedoff.fast.fmindex import SdslGenomeIndex
+
+            if not self.index_path:
+                raise ValueError(
+                    "fast mode requires either index_path or a preloaded index"
+                )
+            self._index = SdslGenomeIndex.load(self.index_path)
         self._regions_cache: Dict[float, object] = {}
 
     # ------------------------------------------------------------------
