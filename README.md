@@ -280,24 +280,26 @@ built only with `BEGUIDEDOFF_CUDA=1` or when nvcc + torch are present).
 
 ## Validation
 
-BEguidedOFF was validated against [Cas-OFFinder](https://github.com/snugel/cas-offinder) v2.4.1 on 361 patient mutation guides across three PAM families.
+BEguidedOFF was validated against [Cas-OFFinder](https://github.com/snugel/cas-offinder) v2.4.1 on 394 patient-mutation guides across three PAM families (≤ 5 mismatches, `return_all`, all hits incl. non-editable). Re-run 2026-10-25 after the overflow re-scan fix, with inputs and methodology identical to the original comparison (scripts `nogit/bench/casoffinder_rerun.py` + `compare_rerun.py`; full report in `nogit/bench/REPORT.md` and `nogit/bench/casoffinder_rerun_report.json`).
 
 | PAM Family | Guides | Total Hits | Overlap vs Cas-OFFinder |
 |-----------|--------|-----------|------------------------|
-| NGG | 233 | ~434K | **99.9998%** (1 difference: N in genome) |
-| NNGRRT | 7 | ~4.7K | **100%** |
-| NNNRRT | 121 | ~814K | **100% per guide** (1 repetitive guide enumerates fully via the automatic re-scan) |
+| NGG | 223 | 414,438 | **99.9998%** (1 difference: N in reference) |
+| NNGRRT | 49 | 20,218 | **100%** |
+| NNNRRT | 122 | 811,624 | **99.9999%** (4 differing calls, all at N-containing loci) |
 
-A single guide (`ATCGAGACCATCCTGGCTAA`) is a 7 bp tandem repeat producing >500K off-targets. The GPU mode re-scans such guides automatically with an escalating hit buffer (10,240 → 163,840 → 2,621,440) so they are enumerated completely; beyond the ceiling it raises a clear error — `--results-per-guide` (or `results_per_guide` on the `beguidedoff` factory) only changes the *initial* buffer size.
+Every difference involves a locus where the reference genome carries an N: BEguidedOFF's 2-bit encoding maps N→A, so an N-containing site can match where Cas-OFFinder counts a mismatch. A single guide (`ATCGAGACCATCCTGGCTAA`) is a 7 bp tandem repeat producing 523,773 off-targets; the GPU mode re-scans such guides automatically with an escalating hit buffer (10,240 → 163,840 → 2,621,440) so they are enumerated completely, and beyond the ceiling it raises a clear error — `--results-per-guide` (or `results_per_guide` on the `beguidedoff` factory) only changes the *initial* buffer size.
 
 ### Speed comparison
 
-| Tool | NGG (~225 guides) | NNGRRT (~50) | NNNRRT (~124) | **Total** |
-|------|------------------|-------------|---------------|-----------|
-| Cas-OFFinder GPU | ~337 s | ~39 s | ~247 s | **~623 s** |
-| **BEguidedOFF GPU** | **~255 s** | **~7 s** | **~187 s** | **~448 s** |
+Whole-process wall time on an NVIDIA GeForce RTX 3060 (2026-10-25 re-run; Cas-OFFinder v2.4.1 OpenCL vs BEguidedOFF extensive, CUDA; one run per PAM family):
 
-**Speedup: ~1.4×** on an NVIDIA GeForce RTX 3060.
+| Tool | NGG (223 guides) | NNGRRT (49) | NNNRRT (122) | **Total** |
+|------|------------------|-------------|---------------|-----------|
+| Cas-OFFinder GPU | 140.7 s | 20.6 s | 67.6 s | **228.9 s** |
+| **BEguidedOFF GPU** | 59.9 s | 16.7 s | 78.7 s | **155.3 s** |
+
+BEguidedOFF is ~1.5× faster end-to-end in this configuration, while producing CCTOP-scored, editable-base-filtered, trinucleotide-annotated TSV output for every hit, whereas Cas-OFFinder dumps raw alignments only. (The NNNRRT batch is the one slow spot: it contains the 7 bp tandem-repeat guide whose 523,773 hits cost two extra re-scan passes plus per-hit assembly.) The 2026-10-25 kernel rework — hoisted per-position window/PAM extraction, a packed bit-field PAM test, and a genome device-upload cache — made the CUDA scan 7.6–9.2× faster with byte-identical outputs (details in `nogit/bench/REPORT.md`). Stage profiling shows the kernel is now 33–78% of search time (60% on the NGG batch); Python-side per-hit assembly (decoding, scoring, dataframe construction) is co-dominant on hit-heavy batches, and pipeline-style top-hit output saves ~9%. The interactive path is the **fast** (CPU FM-index) mode, which is ~12–31× faster than the exhaustive GPU scan for the removal decision (12.5× / 21.2× / 30.8× on the 100 / 500 / 2500-unique-scan benchmark sets; measured 2026-10-29 after the kernel rework narrowed the gap from ~76–95×).
 
 Search scales with the number of *unique* `(guide_seq, PAM)` pairs because identical sequences are deduplicated internally.
 
@@ -309,11 +311,13 @@ Search scales with the number of *unique* `(guide_seq, PAM)` pairs because ident
 PYTHONPATH=/data/lschmitt/apps/BEguidedOFF pixi run python -m pytest tests/ -v
 ```
 
-65 tests cover encoding round-trips, PAM validation, CFD scoring, base-editing
-window logic, search-region derivation, genome conversion, fast-vs-brute-force
-equivalence, import hygiene (no torch/numba on import), and end-to-end
-integration for both modes. A captured test log is kept in
-`nogit/test_results.txt`.
+72 tests cover encoding round-trips, PAM validation (including exhaustive
+IUPAC-encoding checks and a GPU test that plants S/W/V-code PAM sites and
+compares the CUDA extensive search against a brute-force reference), CFD
+scoring, base-editing window logic, search-region derivation, genome
+conversion, fast-vs-brute-force equivalence, import hygiene (no torch/numba
+on import), and end-to-end integration for both modes. A captured test log
+is kept in `nogit/test_results.txt`.
 
 ---
 
@@ -363,7 +367,7 @@ CFD scoring can be re-enabled for backward compatibility or for purely SpCas9 NG
   - For on-target exclusion, provide the position of the **5' end** accordingly (`+` = leftmost, `-` = rightmost).
 - **0-mismatch exclusion:** Only the *on-target* location (from `chromosome` / `position` / `strand` in the input) is excluded. Other exact-match off-targets elsewhere in the genome **are** reported.
 - **Mixed PAMs:** Guides with different PAM families are grouped and scanned separately. Identical `(seq, PAM)` pairs are scanned once and results mapped back to all rows.
-- **CPU fallback:** If CUDA is unavailable, the search falls back to a pure-CPU loop (correct but orders of magnitude slower).
+- **CPU fallback:** There is no CPU brute-force fallback. If CUDA is unavailable, `extensive` mode fails with a clear error; use the `fast` (CPU FM-index) mode instead.
 
 ---
 
