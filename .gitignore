@@ -17,7 +17,6 @@ nogit
 build/
 dist/
 *.so
-!beguidedoff/_cuda.cpython-*.so
 *.fmi
 *.fmi.meta
 *.seq.tmp
