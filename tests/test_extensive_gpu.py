@@ -121,3 +121,153 @@ class TestAutoChunking:
         planted_rows = df[df["guide_rna_sequence"] == planted.guide_seq]
         assert len(planted_rows) == 3
         assert (planted_rows["n_mismatches"] == 0).all()
+
+
+# ---------------------------------------------------------------------------
+# Exotic-PAM kernel path (packed-PAM fallback for S/W/B/D/H/V positions)
+# ---------------------------------------------------------------------------
+import random  # noqa: E402
+
+from beguidedoff.base_editing import editable_base_in_window  # noqa: E402
+from beguidedoff.encoding import (  # noqa: E402
+    encode_dna,
+    encode_guide_64bit,
+    mismatch_positions_2bit,
+    reverse_complement_seq,
+)
+from beguidedoff.pam import IUPAC_MASK  # noqa: E402
+from beguidedoff.scoring import calculate_cctop_score  # noqa: E402
+
+_NUC_2BIT = {"A": 0, "C": 1, "G": 2, "T": 3}
+# One concrete base per IUPAC code (used to plant valid sites).
+_RESOLVE = {"A": "A", "C": "C", "G": "G", "T": "T", "R": "A", "Y": "C",
+            "M": "A", "K": "G", "S": "C", "W": "A", "H": "A", "B": "C",
+            "V": "A", "D": "A", "N": "A"}
+# A concrete base NOT allowed by the code (only meaningful for non-N codes).
+_VIOLATE = {"V": "T", "S": "A", "W": "C", "B": "A", "D": "C", "H": "G"}
+
+
+def _rand_seq(n):
+    return "".join(random.choice("ACGT") for _ in range(n))
+
+
+def _pam_ok(genome_pam, pam):
+    return all((1 << _NUC_2BIT[gb]) & IUPAC_MASK[pb] for gb, pb in zip(genome_pam, pam))
+
+
+def _bruteforce_sites(seq, guide_seq, pam, editor_type, cutoff):
+    """Independent reference: all editable sites with score <= cutoff.
+
+    Both strands, IUPAC-aware PAM test; tuples
+    ``(chrom, position_1based, strand, n_mismatches, score)``.
+    """
+    win = 20 + len(pam)
+    gval = encode_guide_64bit(encode_dna(guide_seq))
+    hits = set()
+
+    def consider(oriented, i, strand, position):
+        w = oriented[i : i + 20]
+        p = oriented[i + 20 : i + win]
+        if len(p) < len(pam) or not _pam_ok(p, pam):
+            return
+        mm = mismatch_positions_2bit(
+            gval, encode_guide_64bit(encode_dna(w)), length=20
+        )
+        score = calculate_cctop_score(mm)
+        if score > cutoff:
+            return
+        if not editable_base_in_window(w, editor_type, 4, 8):
+            return
+        hits.add((position, strand, len(mm), round(score, 6)))
+
+    for i in range(len(seq) - win + 1):
+        consider(seq, i, "+", i + 1)
+    rc = reverse_complement_seq(seq)
+    for i in range(len(rc) - win + 1):
+        leftmost = len(seq) - i - win
+        consider(rc, i, "-", leftmost + win)
+    return hits
+
+
+class TestExoticPamKernelPath:
+    """The packed-PAM fast path covers A/C/G/T, R/Y/M/K/N exactly; codes with
+    allowed-set {S,W,B,D,H,V} take the per-base fallback in the kernel.  This
+    test plants sites for such PAMs and checks the GPU extensive search
+    against an independent brute-force reference."""
+
+    def test_exotic_pam_matches_bruteforce(self, tmp_path):
+        random.seed(11)
+        specs = [("TTTV", "CBE"), ("SGG", "CBE"), ("WGG", "CBE"), ("NGG", "CBE")]
+        # Guides carry a C inside the CBE window (0-based 3..7) so every
+        # planted site passes the editability filter.
+        guides = []
+        c_idx = []
+        for _ in specs:
+            g = list(_rand_seq(20))
+            c = random.randrange(3, 8)
+            g[c] = "C"
+            c_idx.append(c)
+            guides.append("".join(g))
+        seq = _rand_seq(24_000)
+        planted = []  # (position_1based, strand, n_mm) expected as hits
+        pos = 200  # sequential, non-overlapping plant positions
+        for guide, c0, (pam, _) in zip(guides, c_idx, specs):
+            # valid sites: exact x2, 1 mm, 2 mm (exotic position resolved).
+            # Mutations stay in the 5'-distal half: the CCTOP penalty
+            # (sum of 1.2**p over 1-based positions) must stay within the
+            # 5.0 cutoff, and away from the guide's C so sites stay editable.
+            mut_range = [i for i in range(5) if i != c0]
+            for n_mm in (0, 0, 1, 2):
+                site = list(guide)
+                muts = random.sample(mut_range, n_mm)
+                for p in muts:
+                    site[p] = random.choice([b for b in "ACGT" if b != site[p]])
+                pam_seq = "".join(_RESOLVE[c] for c in pam)
+                seq = seq[:pos] + "".join(site) + pam_seq + seq[pos + 24:]
+                score = calculate_cctop_score(sorted(p + 1 for p in muts))
+                if (score <= 5.0
+                        and editable_base_in_window("".join(site), "CBE", 4, 8)):
+                    planted.append((pos + 1, "+", n_mm))
+                pos += 60
+            # decoys: window matches exactly but the exotic PAM base is invalid
+            bad_code = next((c for c in pam if c in _VIOLATE), None)
+            if bad_code is not None:
+                pam_bad = "".join(
+                    _VIOLATE[c] if c == bad_code else _RESOLVE[c] for c in pam
+                )
+                seq = seq[:pos] + guide + pam_bad + seq[pos + 24:]
+                pos += 60
+
+        npz = _write_npz(tmp_path / "exotic.fa", tmp_path / "exotic.npz", seq)
+        finder = make_finder(genome_path=str(npz), max_mismatches=4,
+                             n_top_offtargets=3)
+        guide_inputs = [
+            GuideInput(f"g{i}", g, pam, "3prime", 4, 8, et)
+            for i, (g, (pam, et)) in enumerate(zip(guides, specs))
+        ]
+        df = finder.search(guides=guide_inputs, return_all=True, verbose=False)
+
+        got = set()
+        editor_by_seq = {gi.guide_seq: gi.editor_type for gi in guide_inputs}
+        for _, row in df.iterrows():
+            if row["score"] > 5.0:
+                continue
+            if not editable_base_in_window(row["ot_sequence"],
+                                           editor_by_seq[row["guide_rna_sequence"]],
+                                           4, 8):
+                continue
+            got.add((int(row["ot_position"]), row["ot_strand"],
+                     int(row["n_mismatches"]), round(float(row["score"]), 6)))
+
+        ref = set()
+        for g, (pam, et) in zip(guides, specs):
+            ref |= _bruteforce_sites(seq, g, pam, et, 5.0)
+
+        assert got == ref, (
+            f"only in extensive: {sorted(got - ref)[:5]}\n"
+            f"only in reference: {sorted(ref - got)[:5]}"
+        )
+        # sanity: the search is not vacuous — every planted valid site is found
+        got_keys = {(p, s, m) for (p, s, m, _sc) in got}
+        missing = [pk for pk in planted if pk not in got_keys]
+        assert not missing, f"planted sites missing from results: {missing}"
