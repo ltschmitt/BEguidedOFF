@@ -308,7 +308,7 @@ Search scales with the number of *unique* `(guide_seq, PAM)` pairs because ident
 ## Running Tests
 
 ```bash
-PYTHONPATH=/data/lschmitt/apps/BEguidedOFF pixi run python -m pytest tests/ -v
+PYTHONPATH=$PWD pixi run python -m pytest tests/ -v
 ```
 
 72 tests cover encoding round-trips, PAM validation (including exhaustive
