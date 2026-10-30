@@ -151,7 +151,7 @@ search process needs little RAM regardless of genome size.
 pixi run python -m beguidedoff.cli search \
     --mode extensive \
     --genome nogit/hg38_beguidedoff.npz \
-    --guides nogit/relevant_files/input_example.tsv \
+    --guides examples/input_example.tsv \
     --max-mismatches 4 \
     --n-top 10 \
     --output results.tsv \
@@ -164,7 +164,7 @@ pixi run python -m beguidedoff.cli search \
 pixi run python -m beguidedoff.cli search \
     --mode fast \
     --index nogit/hg38_beguidedoff.fmi \
-    --guides nogit/relevant_files/input_example.tsv \
+    --guides examples/input_example.tsv \
     --search-cutoff 5.0 \
     --n-top 10 \
     --output results.tsv
