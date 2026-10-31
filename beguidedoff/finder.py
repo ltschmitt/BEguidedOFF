@@ -22,7 +22,7 @@ from beguidedoff.encoding import (
     reverse_complement_seq,
 )
 from beguidedoff.pam import encode_pam_mask, pam_matches_at_position, group_guides_by_pam
-from beguidedoff.scoring import calculate_cfd_score, calculate_cctop_score
+from beguidedoff.scoring import calculate_cctop_score
 from beguidedoff.base_editing import editable_base_in_window, get_trinucleotide_contexts
 from beguidedoff.io import (
     load_guides_from_tsv,
@@ -250,7 +250,9 @@ class beguidedoff:
     ):
         self.genome_path = genome_path
         self.max_mismatches = max_mismatches
-        self.scoring_method = scoring_method.upper()
+        if scoring_method.upper() != "CCTOP":
+            raise ValueError("extensive mode only supports scoring_method='CCTOP'")
+        self.scoring_method = "CCTOP"
         self.n_top_offtargets = n_top_offtargets
         self.results_per_guide = results_per_guide
 

@@ -103,7 +103,6 @@ def main():
     srch.add_argument("--max-mismatches", type=int, default=4, help="Max mismatches (extensive)")
     srch.add_argument("--search-cutoff", type=float, default=5.0,
                       help="CCTOP score cutoff T for fast mode (default: 5.0)")
-    srch.add_argument("--scoring", choices=["cctop", "cfd"], default="cctop", help="Scoring method (default: CCTOP)")
     srch.add_argument("--device", default=None, help="torch device (cuda:0 or cpu)")
     srch.add_argument("--n-top", type=int, default=3, help="Top N off-targets per guide")
     srch.add_argument("--results-per-guide", type=int, default=10240, help="Initial off-target hit buffer per guide; overflowing guides are re-scanned with a larger buffer automatically (default: 10240)")
