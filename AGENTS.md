@@ -1,28 +1,28 @@
 # BEguidedOFF — Agent Notes
 
 ## Environment
-- **Package manager:** Pixi (`pixi.toml` at root). Channels: `conda-forge`, `bioconda`. Platform: `linux-64` only.
+- **Package manager:** Pixi (`pixi.toml` at root). Channels: `pytorch`, `conda-forge`, `bioconda`. Platform: `linux-64` only.
 - **Run commands in env:** `pixi run <cmd>`
 - **Add deps:** `pixi add <package>` (not `pip install`)
-- **Installed:** pytorch >=2.10, numpy >=2.4.6, pandas >=3.0.3, pysam >=0.24.0, pytest >=9.0
+- **Installed:** base: numpy, pandas, pysam, pytest. GPU extra: pytorch + numba (Numba CUDA). Fast mode: sdsl-lite FM-index binding (`beguidedoff._fmindex`, built from `csrc/fmindex_binding.cpp`).
 
 ## Architecture
-- One Python package `beguidedoff` with placeholder CUDA kernels in `csrc/`.
+- One Python package `beguidedoff`. The GPU search is Numba CUDA (`beguidedoff/cuda_search.py`); the `csrc/*.cu` files are placeholder stubs for a future C++ CUDA extension, while `csrc/fmindex_binding.cpp` is the live sdsl-lite pybind11 binding.
 - Two main entry points:
-  1. `genome_converter.convert()` — one-time FASTA → 2-bit `.npz` + reverse complement.
-  2. `beguidedoff.search()` — off-target search (CPU fallback), batch 100+ guides, outputs long-format thresholded list.
-- CLI: `python -m beguidedoff.cli {encode-genome,search,verify}`
+  1. `genome_converter.convert()` — one-time FASTA → 2-bit `.npz` (forward + reverse complement).
+  2. `beguidedoff.beguidedoff(mode=...)` — factory returning the **extensive** (GPU brute force) or **fast** (CPU FM-index) finder; `finder.search()` runs the batch off-target search and outputs a long-format thresholded list.
+- CLI: `python -m beguidedoff.cli {encode-genome,build-index,search,verify}`
 - API signatures and data layouts are in `nogit/relevant_files/chat.md` sections 4, 7, 10.
 
 ## Key Data Files (Do Not Guess Formats)
 - `base_editor_profiles.tsv` — base editor lookup. **Use `general_edit_start`/`general_edit_end`** as the search window for off-targets. Columns include `pam`, `cas`, `editing`.
 - `nogit/relevant_files/input_example.tsv` — example input. Relevant columns: `guide_rna_sequence`, `base_editor` (and optional `pam_sequence`). Other columns are metadata.
-- `nogit/relevant_files/cfd.py` — **existing, working CFD scorer** (Doench 2016). Guide bases must be converted T→U; target bases use reverse complement for lookup. The scoring module ports this logic directly.
+- `nogit/relevant_files/cfd.py` — legacy Doench 2016 CFD scorer; **no longer used by the package** (scoring is CCTOP-only).
 - `nogit/relevant_files/Homo_sapiens.GRCh38.dna.primary_assembly.fa` — human genome FASTA for converter.
-- `nogit/` is gitignored and not part of the repository; these files exist only in the local working copy.
+- `nogit/` is gitignored and not part of the repository; these files exist only in the local working copy. Heavy benchmark data lives in `nogit/bench/`; the tracked benchmark scripts and reports are in `benchmarks/`.
 
 ## Conventions & Quirks
-- CFD scoring: guide uses RNA bases (U instead of T). Mismatch keys are `r{guide}:d{rc_target},{position}`. PAM scores are in `PAM_SCORES` dict (2-nt key, e.g. `"GG"`).
+- Scoring is **CCTOP-only**: score = Σ 1.2^p over 1-indexed mismatch positions; **lower = more concerning**; PAM mismatches are ignored.
 - Editing window is **1-indexed from the 5' end of the 20 bp guide** (not PAM-relative).
 - Mixed PAM batches are expected; the design groups guides by `(pam, pam_position)` for separate kernel launches.
 - There is no CI and no formatter/typechecker config yet.
@@ -32,8 +32,10 @@
 ## What Exists vs. What Is Planned
 | Exists | Planned / Stubbed |
 |--------|---------------------|
-| `beguidedoff` package, types, encoding, PAM, scoring, base_editing, io | CUDA kernels (`csrc/*.cu`) — placeholder stubs only |
-| `genome_converter.py` — full implementation | JIT CUDA extension build in `setup.py` — disabled because torch is CPU-only |
-| `finder.py` — CPU search with PyTorch tensor loading | GPU kernel launch in `_search_gpu()` — falls back to CPU loop |
-| `cfd.py` (reference CPU scorer) | `pyproject.toml`, `setup.py` |
-| `cli.py` — argparse CLI | `tests/` — 26 tests passing |
+| `beguidedoff` package: types, encoding, PAM, CCTOP scoring, base_editing, regions, io | CUDA kernels (`csrc/*.cu`) — placeholder stubs only |
+| `genome_converter.py` — full implementation | C++ CUDA extension build in `setup.py` — opt-in via `BEGUIDEDOFF_CUDA=1`, off by default |
+| `finder.py` — extensive GPU search (Numba CUDA) | — |
+| `fast/` — CPU FM-index mode (sdsl-lite binding) | — |
+| `cli.py` — argparse CLI | — |
+| `benchmarks/` — validation/benchmark scripts + reports | — |
+| `tests/` — 68 tests passing | — |
