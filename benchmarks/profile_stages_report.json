@@ -1,0 +1,142 @@
+{
+  "NNGRRT/benchmark": {
+    "family": "NNGRRT",
+    "config": "benchmark",
+    "n_guides_input": 49,
+    "n_rows_out": 20218,
+    "genome_load_s": 8.84,
+    "search_total_s": 6.24,
+    "stages_s": {
+      "dedup": 0.0,
+      "scan_gpu_total": 5.512,
+      "scan_strands": 5.512,
+      "scan_strand": 5.512,
+      "scan_genome": 5.181,
+      "scan_kernel": 4.84,
+      "kernel_xfer": 0.341,
+      "hit_dict_build": 0.331,
+      "rescan_overhead": 0.0,
+      "process_raw_hits": 0.538,
+      "cctop": 0.019,
+      "editable": 0.018,
+      "contexts": 0.015,
+      "df_build": 0.082,
+      "to_csv": 0.073,
+      "df_other": 0.034
+    },
+    "counts": {
+      "scan_genome_calls": 2,
+      "kernel_launches": 32,
+      "scan_rounds": 1,
+      "cctop_calls": 20218,
+      "editable_calls": 20218,
+      "contexts_calls": 20218,
+      "df_build_calls": 49
+    }
+  },
+  "NGG/benchmark": {
+    "family": "NGG",
+    "config": "benchmark",
+    "n_guides_input": 223,
+    "n_rows_out": 414438,
+    "genome_load_s": 8.81,
+    "search_total_s": 50.24,
+    "stages_s": {
+      "dedup": 0.0,
+      "scan_gpu_total": 36.836,
+      "scan_strands": 36.835,
+      "scan_strand": 36.825,
+      "scan_genome": 30.544,
+      "scan_kernel": 30.041,
+      "kernel_xfer": 0.503,
+      "hit_dict_build": 6.282,
+      "rescan_overhead": 0.0,
+      "process_raw_hits": 9.99,
+      "cctop": 0.375,
+      "editable": 0.333,
+      "contexts": 0.594,
+      "df_build": 1.378,
+      "to_csv": 1.476,
+      "df_other": 0.564
+    },
+    "counts": {
+      "scan_genome_calls": 2,
+      "kernel_launches": 32,
+      "scan_rounds": 1,
+      "cctop_calls": 414438,
+      "editable_calls": 414438,
+      "contexts_calls": 414438,
+      "df_build_calls": 223
+    }
+  },
+  "NNNRRT/benchmark": {
+    "family": "NNNRRT",
+    "config": "benchmark",
+    "n_guides_input": 122,
+    "n_rows_out": 811624,
+    "genome_load_s": 8.56,
+    "search_total_s": 68.86,
+    "stages_s": {
+      "dedup": 0.0,
+      "scan_gpu_total": 41.637,
+      "scan_strands": 41.608,
+      "scan_strand": 41.581,
+      "scan_genome": 23.465,
+      "scan_kernel": 22.692,
+      "kernel_xfer": 0.773,
+      "hit_dict_build": 18.116,
+      "rescan_overhead": 0.028,
+      "process_raw_hits": 19.417,
+      "cctop": 0.658,
+      "editable": 0.685,
+      "contexts": 0.905,
+      "df_build": 3.217,
+      "to_csv": 2.989,
+      "df_other": 1.599
+    },
+    "counts": {
+      "scan_genome_calls": 6,
+      "kernel_launches": 96,
+      "scan_rounds": 3,
+      "cctop_calls": 809068,
+      "editable_calls": 811624,
+      "contexts_calls": 811624,
+      "df_build_calls": 122
+    }
+  },
+  "NNNRRT/pipeline": {
+    "family": "NNNRRT",
+    "config": "pipeline",
+    "n_guides_input": 122,
+    "n_rows_out": 366,
+    "genome_load_s": 8.61,
+    "search_total_s": 62.82,
+    "stages_s": {
+      "dedup": 0.0,
+      "scan_gpu_total": 42.11,
+      "scan_strands": 42.081,
+      "scan_strand": 42.054,
+      "scan_genome": 23.46,
+      "scan_kernel": 22.666,
+      "kernel_xfer": 0.793,
+      "hit_dict_build": 18.594,
+      "rescan_overhead": 0.028,
+      "process_raw_hits": 19.321,
+      "cctop": 0.676,
+      "editable": 0.649,
+      "contexts": 0.783,
+      "df_build": 0.052,
+      "to_csv": 0.004,
+      "df_other": 1.331
+    },
+    "counts": {
+      "scan_genome_calls": 6,
+      "kernel_launches": 96,
+      "scan_rounds": 3,
+      "cctop_calls": 809068,
+      "editable_calls": 811624,
+      "contexts_calls": 729852,
+      "df_build_calls": 122
+    }
+  }
+}

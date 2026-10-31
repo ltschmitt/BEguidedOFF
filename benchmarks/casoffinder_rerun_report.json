@@ -1,0 +1,102 @@
+{
+  "families": {
+    "NGG": {
+      "cas_offinder_hits": 414437,
+      "beguidedoff_hits": 414438,
+      "overlap": 414437,
+      "cas_only": 0,
+      "beguidedoff_only": 1,
+      "concordance_pct": 100.0,
+      "rerun_output_identical_to_may2026": true,
+      "differing_loci_checked": 1,
+      "differing_loci_with_N_in_reference": 1,
+      "cas_only_examples": [],
+      "beguidedoff_only_examples": [
+        [
+          "TGCATGTTTGTGCCTGTCCT",
+          "1",
+          121907762,
+          "-",
+          5
+        ]
+      ],
+      "beguidedoff_total_s": 59.89,
+      "beguidedoff_search_s": 49.8
+    },
+    "NNGRRT": {
+      "cas_offinder_hits": 20218,
+      "beguidedoff_hits": 20218,
+      "overlap": 20218,
+      "cas_only": 0,
+      "beguidedoff_only": 0,
+      "concordance_pct": 100.0,
+      "rerun_output_identical_to_may2026": true,
+      "differing_loci_checked": 0,
+      "differing_loci_with_N_in_reference": 0,
+      "cas_only_examples": [],
+      "beguidedoff_only_examples": [],
+      "beguidedoff_total_s": 16.67,
+      "beguidedoff_search_s": 6.4
+    },
+    "NNNRRT": {
+      "cas_offinder_hits": 809066,
+      "beguidedoff_hits": 809068,
+      "overlap": 809065,
+      "cas_only": 1,
+      "beguidedoff_only": 3,
+      "concordance_pct": 99.9999,
+      "rerun_output_identical_to_may2026": true,
+      "differing_loci_checked": 3,
+      "differing_loci_with_N_in_reference": 3,
+      "cas_only_examples": [
+        [
+          "ATCGAGACCATCCTGGCTAA",
+          "20",
+          29562947,
+          "-",
+          5
+        ]
+      ],
+      "beguidedoff_only_examples": [
+        [
+          "CTGGTGGGGTTGGAGGTGAT",
+          "16",
+          88366803,
+          "-",
+          5
+        ],
+        [
+          "ATCGAGACCATCCTGGCTAA",
+          "20",
+          29562947,
+          "-",
+          4
+        ],
+        [
+          "AACAAACAAGGATCCTGATG",
+          "22",
+          11016714,
+          "+",
+          5
+        ]
+      ],
+      "beguidedoff_total_s": 78.7,
+      "beguidedoff_search_s": 68.72
+    }
+  },
+  "cas_offinder_wall_s": {
+    "NGG": 140.7,
+    "NNGRRT": 20.6,
+    "NNNRRT": 67.64
+  },
+  "totals": {
+    "cas_offinder_hits": 1243721,
+    "beguidedoff_hits": 1243724,
+    "overlap": 1243720,
+    "cas_only": 1,
+    "beguidedoff_only": 4,
+    "concordance_pct": 99.9999,
+    "cas_offinder_wall_s_total": 228.94,
+    "beguidedoff_wall_s_total": 155.26
+  }
+}
