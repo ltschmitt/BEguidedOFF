@@ -6,19 +6,18 @@ touches torch/CUDA:
 * ``beguidedoff._fmindex`` -- sdsl-lite FM-index binding used by the **fast**
   CPU mode.  Built when the sdsl-lite headers can be found (see below), or
   forced on with ``BEGUIDEDOFF_FAST=1``.
-* ``beguidedoff._cuda`` -- the GPU kernel extension used by the **extensive**
-  mode.  Built only when ``BEGUIDEDOFF_CUDA=1`` (or, for backwards
-  compatibility, when ``nvcc`` is present and ``USE_CUDA != 0``); requires
-  ``torch`` and must be built with ``--no-build-isolation`` after torch is
-  installed.
+* ``beguidedoff._cuda`` -- optional GPU kernel extension.  **Opt-in only**:
+  built when ``BEGUIDEDOFF_CUDA=1`` is set explicitly, which requires
+  ``nvcc`` and ``torch`` and must be built with ``--no-build-isolation``
+  after torch is installed.  Default installs never touch CUDA (nothing
+  imports the extension yet; the extensive mode drives torch directly).
 
 Environment variables
 ---------------------
 ``BEGUIDEDOFF_FAST``   "0" to skip / "1" to require the FM-index binding.
-``BEGUIDEDOFF_CUDA``   "0" to skip / "1" to require the CUDA extension.
+``BEGUIDEDOFF_CUDA``   "1" to build the CUDA extension (default: skipped).
 ``SDSL_INCLUDE_DIR``   Directory that contains ``sdsl/suffix_arrays.hpp``.
 ``SDSL_LIB_DIR``       Directory that contains ``libsdsl.a`` / ``libsdsl.so``.
-``USE_CUDA``           Legacy switch: "0" disables the CUDA build.
 
 Building the fast binding against a conda/pixi environment (recommended)::
 
@@ -115,29 +114,31 @@ def _maybe_add_fast_extension():
 
 
 def _maybe_add_cuda_extension():
-    force = os.environ.get("BEGUIDEDOFF_CUDA")
-    if force is not None and not _truthy(force):
-        return
-    if force is None and os.environ.get("USE_CUDA", "1") == "0":
+    """Opt-in build of the CUDA kernel extension.
+
+    The kernel is compiled only when ``BEGUIDEDOFF_CUDA=1`` is set
+    explicitly; the build then fails loudly if nvcc or torch are missing
+    instead of silently producing a kernel-less wheel.
+    """
+    if not _truthy(os.environ.get("BEGUIDEDOFF_CUDA", "")):
         return
 
     import shutil
-    import subprocess
 
     if shutil.which("nvcc") is None:
-        if force is not None and _truthy(force):
-            raise SystemExit("BEGUIDEDOFF_CUDA=1 but nvcc was not found.")
-        print("beguidedoff: nvcc not found -- skipping the CUDA extension.")
-        return
+        raise SystemExit(
+            "BEGUIDEDOFF_CUDA=1 but nvcc was not found; install the CUDA "
+            "toolkit or drop BEGUIDEDOFF_CUDA to skip the GPU kernel."
+        )
 
     try:
         import torch.utils.cpp_extension as cpp_ext
         from torch.utils.cpp_extension import BuildExtension, CUDAExtension
-    except Exception as exc:  # torch not installed / no CUDA support
-        if force is not None and _truthy(force):
-            raise
-        print(f"beguidedoff: torch unavailable ({exc}); skipping the CUDA extension.")
-        return
+    except Exception as exc:
+        raise SystemExit(
+            f"BEGUIDEDOFF_CUDA=1 but torch is unavailable ({exc}); install "
+            "torch with CUDA support or drop BEGUIDEDOFF_CUDA."
+        ) from exc
 
     # Allow compiling with system NVCC newer than the torch CUDA version
     # (minor mismatch is acceptable; PTX is backward compatible).
@@ -154,19 +155,50 @@ def _maybe_add_cuda_extension():
 
     cpp_ext._check_cuda_version = _patched_check_cuda_version
 
+    # Absolute paths: torch's ninja build runs nvcc from the build temp
+    # directory, where relative source/include paths do not resolve.
+    here = os.path.abspath(os.path.dirname(__file__))
     ext_modules.append(
         CUDAExtension(
             name="beguidedoff._cuda",
             sources=[
-                "csrc/offtarget_kernel.cu",
-                "csrc/scoring_kernel.cu",
-                "csrc/bindings.cpp",
+                os.path.join(here, "csrc", "offtarget_kernel.cu"),
+                os.path.join(here, "csrc", "scoring_kernel.cu"),
+                os.path.join(here, "csrc", "bindings.cpp"),
             ],
-            include_dirs=["csrc/include"],
+            include_dirs=[os.path.join(here, "csrc", "include")],
             extra_compile_args={"cxx": ["-O3"], "nvcc": ["-O3", "--use_fast_math"]},
         )
     )
-    return BuildExtension
+
+    class _CudaOnlyBuildExtension(BuildExtension):
+        """``BuildExtension`` that keeps torch's ABI flags off ``_fmindex``.
+
+        torch's BuildExtension injects its own C++ ABI defaults (notably the
+        pre-C++11 ``-D_GLIBCXX_USE_CXX11_ABI=0``) into every extension it
+        builds. The FM-index binding links against sdsl-lite instead, whose
+        conda-forge build uses the new C++11 ABI, so it must be compiled with
+        plain setuptools flags; only the CUDA kernel goes through torch.
+        """
+
+        def build_extensions(self):
+            # Plain setuptools first, before BuildExtension.build_extensions
+            # monkey-patches the compiler with its ninja wrapper.
+            plain_exts = [e for e in self.extensions if e.name != "beguidedoff._cuda"]
+            cuda_exts = [e for e in self.extensions if e.name == "beguidedoff._cuda"]
+            if plain_exts:
+                self.extensions = plain_exts
+                # Skip BuildExtension.build_extensions (torch flag injection)
+                # and use the plain setuptools build_ext for the rest.
+                super(BuildExtension, self).build_extensions()
+            if cuda_exts:
+                self.extensions = cuda_exts
+                super().build_extensions()
+            # Restore the full list: setuptools' build_ext.run() copies the
+            # built libraries inplace by iterating self.extensions.
+            self.extensions = plain_exts + cuda_exts
+
+    return _CudaOnlyBuildExtension
 
 
 _maybe_add_fast_extension()
@@ -174,7 +206,7 @@ _build_ext_cls = _maybe_add_cuda_extension()
 
 setup(
     name="beguidedoff",
-    version="0.1.0",
+    version="0.2.0",
     packages=find_packages(),
     ext_modules=ext_modules,
     cmdclass={"build_ext": _build_ext_cls} if _build_ext_cls else {},
