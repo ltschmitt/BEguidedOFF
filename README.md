@@ -2,7 +2,7 @@
 
 GPU-Accelerated Off-Target Base Editing Seeker for CRISPR-Cas9 base editors.
 
-BEguidedOFF searches the human genome for off-target sites where base editing is possible, using GPU acceleration for 2-bit packed genome matching. It is designed for batch processing of 100+ guide RNAs simultaneously and produces off-target calls with CCTOP penalty scores (or optionally Doench 2016 CFD scores), base-editing window filtering, and trinucleotide context annotation.
+BEguidedOFF searches the human genome for off-target sites where base editing is possible, using GPU acceleration for 2-bit packed genome matching. It is designed for batch processing of 100+ guide RNAs simultaneously and produces off-target calls with CCTOP penalty scores, base-editing window filtering, and trinucleotide context annotation.
 
 Two search modes share one API:
 
@@ -17,7 +17,7 @@ Given a set of base editing guide RNAs, BEguidedOFF will:
 
 1. **Encode the reference genome** once into a compact 2-bit `.npz` format (forward + reverse complement).
 2. **Search** all guide RNAs in parallel against the entire genome on GPU via Numba CUDA.
-3. **Score** each off-target with the CCTOP penalty model (default) or the Doench 2016 CFD model (optional).
+3. **Score** each off-target with the CCTOP penalty model.
 4. **Filter** hits by editable-base presence within the base editor's activity window (e.g. A-to-G editors require an **A** in the window).
 5. **Report** chromosome, 1-based position, strand, mismatch positions, score, and trinucleotide context of editable bases.
 
@@ -25,13 +25,7 @@ Given a set of base editing guide RNAs, BEguidedOFF will:
 
 ## Environment
 
-This project is managed with [`pixi`](https://pixi.sh).  All commands below should be run inside the pixi environment.
-
-```bash
-pixi install          # first-time setup
-pixi run <command>    # run any command inside the env
-pixi shell            # open a shell inside the env
-```
+All commands below run inside the [`pixi`](https://pixi.sh) environment: `pixi install` once, then `pixi run <command>` (or `pixi shell`).
 
 ---
 
@@ -52,14 +46,7 @@ Use this when your data comes from a base-editing pipeline and you have `base_ed
 | `base_editor` | Base editor profile name matching a row in `base_editor_profiles.tsv` |
 | `strand_used` *(optional)* | `+` or `-` — on-target strand (required when `chromosome` and `position` are provided, used for correct on-target exclusion) |
 
-Other metadata columns (gene, mutation IDs, etc.) are ignored and preserved in the output by row index. No unique identifier is required.
-
-**Example row:**
-
-```
-chromosome  position  mutated_base  corrected_base  target_base  strand_used  editing_position  bystander_positions  guide_rna_sequence      pam_sequence  base_editor  gene
-1           18700668  T             C               C            -            4                 8                    GGCAGTTACTGAACCAGACC  TGG           ABE-NW1    PAX7
-```
+Other metadata columns (gene, mutation IDs, etc.) are ignored and preserved in the output by row index. No unique identifier is required. See `examples/input_example.tsv` for a sample.
 
 ### Format 2: Explicit columns
 
@@ -123,11 +110,7 @@ pixi run python -m beguidedoff.cli encode-genome \
     --include-n-mask
 ```
 
-This produces `hg38_beguidedoff.npz` containing:
-- 2-bit packed forward strand (`~739 MB`)
-- Pre-computed reverse complement (`~739 MB`)
-- Chromosome index map and offsets
-- N-position mask
+This produces `hg38_beguidedoff.npz` containing the 2-bit packed forward strand and pre-computed reverse complement (~739 MB each), the chromosome index map and offsets, and an N-position mask.
 
 ### Fast mode (FM-index)
 
@@ -243,38 +226,20 @@ The default output is a long-format TSV with one row per off-target hit.
 
 ## Architecture
 
-```
-beguidedoff/
-├── __init__.py          # lazy mode factory (extensive/fast; no torch on import)
-├── cli.py               # argparse CLI (encode-genome, build-index, search, verify)
-├── types.py             # GuideInput, OffTarget, GuideResult
-├── encoding.py          # 2-bit DNA encoding, 40-bit guide packing
-├── pam.py               # IUPAC PAM masks, guide grouping
-├── scoring.py           # CCTOP score, Doench 2016 CFD scorer (T→U, RC lookup)
-├── base_editing.py      # Editable-base window filtering, trinucleotide contexts
-├── regions.py           # score cutoff → cold/hot search regions (fast mode)
-├── io.py                # TSV loading (preset-based or explicit), output formatting
-├── genome_converter.py  # FASTA → .npz (forward + RC, chromosome index)
-├── finder.py            # extensive mode: beguidedoff (CUDA only)
-├── cuda_search.py       # Numba CUDA kernel (scans 2-bit genome in chunks)
-└── fast/
-    ├── backend.py       # symbol codec (2-bit-compatible) + backend protocol
-    ├── fmindex.py       # sdsl-lite FM-index build/load wrapper
-    └── finder.py        # fast mode: beguidedofffast (CPU, streaming search)
-```
+`beguidedoff/` is a Python package. A lazy mode factory (`__init__.py`, no torch/numba on
+import) dispatches to the **extensive** GPU brute-force finder (`finder.py` + `cuda_search.py`,
+Numba CUDA over a 2-bit packed genome, 200 Mbp chunks, ≤2,048 unique scan keys per launch) or
+the **fast** CPU FM-index finder (`fast/`, backed by the sdsl-lite pybind11 binding in
+`csrc/fmindex_binding.cpp`, compiled to `beguidedoff._fmindex`; the separate C++ CUDA extension
+is only built with `BEGUIDEDOFF_CUDA=1`). Shared modules cover 2-bit encoding, IUPAC PAM
+handling, CCTOP scoring, editable-base window filtering, score-cutoff search regions, TSV I/O,
+and FASTA→.npz conversion.
 
-The sdsl-lite pybind11 binding for the fast mode lives in `csrc/fmindex_binding.cpp`
-and is compiled to `beguidedoff._fmindex` (built by default; the CUDA extension is
-built only with `BEGUIDEDOFF_CUDA=1` or when nvcc + torch are present).
-
-### GPU kernel design
-
-- **Genome packing:** 2 bits per base, 16 bases per `uint32`
-- **Guide packing:** 40-bit integer for 20-base sequence
-- **Mismatch detection:** XOR + popcount on the 40-bit value
-- **PAM matching:** IUPAC 4-bit mask per position, checked before guide comparison
-- **Chunking:** Genome scanned in 200 Mbp chunks to manage GPU memory; guides split automatically into launches of ≤2,048 unique scan keys (shared-memory budget)
-- **Buffer limit:** `results_per_guide=10240` initial raw hits per guide. A guide that overflows is **re-scanned automatically** with the buffer raised ×16 (up to 2,621,440) and its hits replaced — the returned hit list is exact. A guide that still overflows at that ceiling fails with a clear `RuntimeError` instead of returning silent truncations; use the fast CPU mode for such guides.
+A guide whose raw hits overflow the per-guide buffer (`results_per_guide=10240`) is
+**re-scanned automatically** with the buffer raised ×16 (up to 2,621,440) and its hits
+replaced — the returned hit list is exact. A guide that still overflows at that ceiling fails
+with a clear `RuntimeError` instead of returning silent truncations; use the fast CPU mode for
+such guides.
 
 ---
 
@@ -299,7 +264,7 @@ Whole-process wall time on an NVIDIA GeForce RTX 3060 (2026-10-25 re-run; Cas-OF
 | Cas-OFFinder GPU | 140.7 s | 20.6 s | 67.6 s | **228.9 s** |
 | **BEguidedOFF GPU** | 59.9 s | 16.7 s | 78.7 s | **155.3 s** |
 
-BEguidedOFF is ~1.5× faster end-to-end in this configuration, while producing CCTOP-scored, editable-base-filtered, trinucleotide-annotated TSV output for every hit, whereas Cas-OFFinder dumps raw alignments only. (The NNNRRT batch is the one slow spot: it contains the 7 bp tandem-repeat guide whose 523,773 hits cost two extra re-scan passes plus per-hit assembly.) The 2026-10-25 kernel rework — hoisted per-position window/PAM extraction, a packed bit-field PAM test, and a genome device-upload cache — made the CUDA scan 7.6–9.2× faster with byte-identical outputs (details in `benchmarks/REPORT.md`). Stage profiling shows the kernel is now 33–78% of search time (60% on the NGG batch); Python-side per-hit assembly (decoding, scoring, dataframe construction) is co-dominant on hit-heavy batches, and pipeline-style top-hit output saves ~9%. The interactive path is the **fast** (CPU FM-index) mode, which is ~12–31× faster than the exhaustive GPU scan for the removal decision (12.5× / 21.2× / 30.8× on the 100 / 500 / 2500-unique-scan benchmark sets; measured 2026-10-29 after the kernel rework narrowed the gap from ~76–95×).
+BEguidedOFF is ~1.5× faster end-to-end in this configuration, while producing CCTOP-scored, editable-base-filtered, trinucleotide-annotated TSV output for every hit, whereas Cas-OFFinder dumps raw alignments only. (The NNNRRT batch is the one slow spot: it contains the 7 bp tandem-repeat guide whose 523,773 hits cost two extra re-scan passes plus per-hit assembly.) The 2026-10-25 kernel rework made the CUDA scan 7.6–9.2× faster with byte-identical outputs; the kernel is now 33–78% of search time, with Python-side per-hit assembly co-dominant on hit-heavy batches. The interactive path is the **fast** (CPU FM-index) mode, which is ~12–31× faster than the exhaustive GPU scan for the removal decision. Full methodology, per-stage profiling, and benchmark history: [`benchmarks/REPORT.md`](benchmarks/REPORT.md).
 
 Search scales with the number of *unique* `(guide_seq, PAM)` pairs because identical sequences are deduplicated internally.
 
@@ -311,56 +276,29 @@ Search scales with the number of *unique* `(guide_seq, PAM)` pairs because ident
 PYTHONPATH=$PWD pixi run python -m pytest tests/ -v
 ```
 
-72 tests cover encoding round-trips, PAM validation (including exhaustive
+68 tests cover encoding round-trips, PAM validation (including exhaustive
 IUPAC-encoding checks and a GPU test that plants S/W/V-code PAM sites and
-compares the CUDA extensive search against a brute-force reference), CFD
-scoring, base-editing window logic, search-region derivation, genome
-conversion, fast-vs-brute-force equivalence, import hygiene (no torch/numba
-on import), and end-to-end integration for both modes. A captured test log
-is kept in `nogit/test_results.txt`.
+compares the CUDA extensive search against a brute-force reference),
+base-editing window logic, search-region derivation, genome conversion,
+fast-vs-brute-force equivalence, import hygiene (no torch/numba on import),
+and end-to-end integration for both modes.
 
 ---
 
-## CCTOP Scoring (Default)
+## CCTOP Scoring
 
-BEguidedOFF now uses the **CCTOP off-target penalty score** as its default scoring method.
-
-### How it works
-
-For every mismatch at position *p* (1-indexed from the 5′ end of the 20 bp guide), the penalty is `1.2**p`. The overall score is the **sum** of these penalties:
-
-```
-cctop_score = Σ 1.2^p  (for each mismatch at position p)
-```
-
-PAM mismatches are **ignored** — only the 20 bp guide alignment contributes to the score.
-
-### Interpretation
+For every mismatch at position *p* (1-indexed from the 5′ end of the 20 bp guide), the penalty is `1.2**p`; the overall score is the **sum** of these penalties. PAM mismatches are **ignored** — only the 20 bp guide alignment contributes to the score.
 
 - **Lower scores** = more likely off-target activity (mismatches in the seed region, near the PAM)
-- **Higher scores** = less likely off-target activity (mismatches far from the PAM)
-- A perfect match yields a score of **0.0**
+- **Higher scores** = less concerning (mismatches far from the PAM); a perfect match scores **0.0**
 
-This model is intentionally simple and **not biased toward any single Cas family** (e.g. SpCas9 NGG). It works equally well for NGG, NNGRRT, NNNRRT, NGN, or any future PAM family.
-
-### Why CCTOP over CFD?
-
-The Doench 2016 CFD penalty matrix is specific to SpCas9 (NGG). Its position-dependent mismatch penalties and especially its PAM score table are not valid for other PAM families such as `NNGRRT` (saCas9) or `NGN` (ngCas9), which can produce misleading off-target rankings when guides with mixed PAM families are searched together.
-
-The CCTOP formula (from the CCTOP tool) treats mismatches uniformly weighted by distance from the seed, making it unbiased across Cas families.
-
-### Using the CFD scorer (not recommended for mixed PAM families)
-
-CFD scoring can be re-enabled for backward compatibility or for purely SpCas9 NGG datasets via `--scoring cfd` (CLI) or `scoring_method="CFD"` (Python API). The PAM multiplier remains **deactivated** in CFD mode for the same cross-family bias reasons described above.
+The model treats mismatches uniformly, weighted only by distance from the seed, so it is **not biased toward any single Cas family** — it works equally well for NGG, NNGRRT, NNNRRT, NGN, or any other PAM family.
 
 ---
 
 ## Important Notes
 
 - **PAM support:** Only **3' PAM (`3prime`)** is supported. 5' PAM (`5prime`) is not supported.
-- **Scoring:** CCTOP is now the default. CFD (Doench 2016) is still available via `--scoring cfd` but is not recommended for mixed-PAM datasets.
-- **Score direction:** With CCTOP, lower scores are more concerning. Results are sorted ascending. With CFD, higher scores are more concerning and results are sorted descending.
-- **`--score-threshold`:** For CCTOP, the threshold acts as a **maximum** penalty (only off-targets with score ≤ threshold are kept). For CFD it is a **minimum** score as before.
 - **Position conventions:** All input and output positions are **1-based**. The position is the **5' end of the guide RNA sequence** on the reported strand:
   - For `+` strand off-targets: the **leftmost** position (guide starts here, PAM follows downstream).
   - For `-` strand off-targets: the **rightmost** position (guide ends here, PAM precedes it upstream).
@@ -373,7 +311,6 @@ CFD scoring can be re-enabled for backward compatibility or for purely SpCas9 NG
 
 ## References
 
-- Doench et al. (2016) — *Optimized sgRNA design to maximize activity and minimize off-target effects of CRISPR-Cas9*
 - Richter et al. (2020) — *Phage-assisted evolution of an adenine base editor with improved Cas domain compatibility and activity*
 
 ---
