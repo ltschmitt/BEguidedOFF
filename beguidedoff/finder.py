@@ -102,9 +102,12 @@ except Exception:
 # with a larger buffer; see ``_MAX_RESULTS_PER_GUIDE``.
 _DEFAULT_RESULTS_PER_GUIDE = 10240
 # Ceiling for the escalating re-scan (10240 * 16**2). A guide that still
-# overflows at this size matches the genome so often that complete
-# enumeration is out of reach for the GPU mode; the search fails loudly
-# instead of returning a silently truncated hit list.
+# overflows at this size matches the genome extraordinarily often — with the
+# N-mask gate active this means genuine repetitive sequence (poly-A/T tracts
+# and similar). Enumeration stops there and the deterministic genome-order
+# prefix of hits is kept: the affected guides are extreme multi-mappers that
+# no off-target filter would pass, and the exact raw-hit count is logged so
+# the truncation is loud, not silent.
 _MAX_RESULTS_PER_GUIDE = 2_621_440
 # Raw hits are decoded into one dict per hit on the host. When the buffer is
 # escalated beyond the default, guides are processed in batches whose
@@ -122,7 +125,8 @@ def _search_strand_cuda(
     chrom_offsets: np.ndarray,
     chrom_lengths: np.ndarray,
     results_per_guide: int = 10240,
-) -> Tuple[dict, dict]:
+    n_mask_packed: Optional[np.ndarray] = None,
+) -> Tuple[dict, dict, dict]:
     """GPU search on one strand using Numba CUDA.
 
     Guides are processed in launches of at most ``_MAX_GUIDES_PER_LAUNCH``
@@ -132,12 +136,15 @@ def _search_strand_cuda(
     bounded. Larger inputs are therefore split automatically instead of
     raising the historical "Too many guides" error.
 
-    Returns (results_dict, overflow_dict).
+    Returns (results_dict, overflow_dict, counts_dict).
     results_dict: scan_key -> list of raw hit dicts.
     overflow_dict: scan_key -> True if results_per_guide was exceeded.
+    counts_dict: scan_key -> exact number of raw matches on this strand
+        (counted by the kernel even beyond the recorded buffer).
     """
     results: dict = {sg: [] for sg in scan_guides}
     overflow: dict = {sg: False for sg in scan_guides}
+    counts: dict = {sg: 0 for sg in scan_guides}
 
     if not _HAS_NUMBA_CUDA:
         raise RuntimeError("Numba CUDA search is not available")
@@ -164,7 +171,7 @@ def _search_strand_cuda(
             pam_lens_arr[i] = len(sg.pam)
             pam_3prime_arr[i] = 1  # only 3prime is supported
 
-        gpu_results, overflow_flags = search_genome_cuda(
+        gpu_results, overflow_flags, count_flags = search_genome_cuda(
             genome_packed,
             total_bp,
             guide_vals,
@@ -174,6 +181,7 @@ def _search_strand_cuda(
             max_mismatches,
             return_overflow=True,
             results_per_guide=results_per_guide,
+            n_mask_packed=n_mask_packed,
         )
 
         for g_idx, sg in enumerate(batch):
@@ -230,8 +238,9 @@ def _search_strand_cuda(
                 )
 
             overflow[sg] = overflow[sg] or overflow_flags.get(g_idx, False)
+            counts[sg] += int(count_flags.get(g_idx, 0))
 
-    return results, overflow
+    return results, overflow, counts
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +256,7 @@ class beguidedoff:
         device: Optional[str] = None,
         n_top_offtargets: int = 3,
         results_per_guide: int = 10240,
+        max_results_per_guide: Optional[int] = None,
     ):
         self.genome_path = genome_path
         self.max_mismatches = max_mismatches
@@ -255,6 +265,10 @@ class beguidedoff:
         self.scoring_method = "CCTOP"
         self.n_top_offtargets = n_top_offtargets
         self.results_per_guide = results_per_guide
+        # Re-scan escalation ceiling. None -> fall back to the module-level
+        # ``_MAX_RESULTS_PER_GUIDE`` (read at call time, so tests can
+        # monkeypatch it).
+        self.max_results_per_guide = max_results_per_guide
 
         if device is None:
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -274,6 +288,7 @@ class beguidedoff:
         self.chrom_names = [str(c) for c in self.genome_data["chrom_names"]]
         self.chrom_offsets = self.genome_data["chrom_offsets"]
         self.chrom_lengths = self.genome_data["chrom_lengths"]
+        self._prepare_n_masks()
 
         self.genome_forward_t = torch.from_numpy(
             self.genome_data["genome_forward"].copy()
@@ -285,6 +300,43 @@ class beguidedoff:
             ).to(self.device)
         else:
             self.genome_rc_t = None
+
+    def _prepare_n_masks(self) -> None:
+        """Build packed N-position bitmasks for both strands.
+
+        The converter stores a bitmask of N positions (bit i = forward
+        position i, ``np.packbits`` default big bit order). The GPU kernel
+        consumes little bit order; the reverse-complement strand needs the
+        mask reversed within each chromosome (the RC genome is reversed per
+        chromosome, so an N at forward local position *l* sits at RC local
+        position ``chrom_length - 1 - l``).
+
+        Genomes encoded without an N mask (``--include-n-mask`` off) search
+        ungated — the historical behaviour.
+        """
+        packed_big = self.genome_data.get("n_mask")
+        if packed_big is None or np.asarray(packed_big).size == 0:
+            self._n_mask_fwd = None
+            self._n_mask_rc = None
+            return
+        packed_big = np.asarray(packed_big, dtype=np.uint8)
+        bits = np.unpackbits(packed_big, bitorder="big", count=self.total_bp)
+        if not bits.any():
+            self._n_mask_fwd = None   # no N in this assembly: gate is a no-op
+            self._n_mask_rc = None
+            return
+        fwd = np.packbits(bits, bitorder="little")
+        self._n_mask_fwd = np.ascontiguousarray(
+            np.pad(fwd, (0, 16), constant_values=0), dtype=np.uint8
+        )
+        rc_bits = np.empty(self.total_bp, dtype=np.uint8)
+        for i, clen in enumerate(self.chrom_lengths):
+            off = int(self.chrom_offsets[i])
+            rc_bits[off : off + clen] = bits[off : off + clen][::-1]
+        rc = np.packbits(rc_bits, bitorder="little")
+        self._n_mask_rc = np.ascontiguousarray(
+            np.pad(rc, (0, 16), constant_values=0), dtype=np.uint8
+        )
 
     @property
     def genome_info(self) -> dict:
@@ -468,9 +520,17 @@ class beguidedoff:
             )
         if verbose:
             log.info("Running GPU search on %s ...", self.device)
-        raw_hits_dict, overflow = self._search_gpu(
+        raw_hits_dict, overflow, _hit_counts = self._search_gpu(
             scan_guides, mapping, log=log, verbose=verbose
         )
+        truncated = [sg for sg, ovf in overflow.items() if ovf]
+        if truncated:
+            log.warning(
+                "%d guide(s) returned truncated off-target lists (the "
+                "re-scan escalation ceiling was reached); their off-target "
+                "counts are lower bounds. See the per-guide warnings above.",
+                len(truncated),
+            )
 
         group_results, below_threshold_counts = self._process_raw_hits(
             raw_hits_dict, mapping, count_score_threshold, effective_include_non_editable
@@ -514,17 +574,19 @@ class beguidedoff:
         A guide whose raw-hit buffer overflows is **re-scanned** with a 16x
         larger buffer; its raw hits are replaced, so the returned hit list is
         exact. Escalation repeats until every guide fits or
-        ``_MAX_RESULTS_PER_GUIDE`` is reached — in the latter case a
-        ``RuntimeError`` is raised rather than returning a silently
-        truncated result.
+        ``_MAX_RESULTS_PER_GUIDE`` is reached — in the latter case the
+        genome-order prefix of hits is kept and a warning with the exact raw
+        hit count is logged (guides that hit this ceiling are extreme
+        multi-mappers; see the ``max_results_per_guide`` constructor arg).
         """
         raw_combined: Dict[_ScanGuide, List[dict]] = {sg: [] for sg in scan_guides}
         overflow_combined: Dict[_ScanGuide, bool] = {sg: False for sg in scan_guides}
+        counts_combined: Dict[_ScanGuide, int] = {sg: 0 for sg in scan_guides}
 
         pending = list(scan_guides)
         results_per_guide = self.results_per_guide
         while pending:
-            round_raw, round_overflow = self._scan_strands(
+            round_raw, round_overflow, round_counts = self._scan_strands(
                 pending, results_per_guide, log=log, verbose=verbose
             )
             # Replace (not extend): a re-scan covers the whole genome, so its
@@ -532,21 +594,30 @@ class beguidedoff:
             for sg in pending:
                 raw_combined[sg] = round_raw[sg]
                 overflow_combined[sg] = round_overflow[sg]
+                counts_combined[sg] = round_counts[sg]
             pending = [sg for sg in pending if round_overflow[sg]]
             if not pending:
                 break
-            if results_per_guide >= _MAX_RESULTS_PER_GUIDE:
-                names = ", ".join(sorted({sg.guide_seq for sg in pending})[:10])
-                raise RuntimeError(
-                    f"{len(pending)} guide(s) still exceed the raw-hit buffer "
-                    f"at results_per_guide={results_per_guide} "
-                    f"(e.g. {names}). These guides match the genome "
-                    f"extraordinarily often at <= {self.max_mismatches} "
-                    "mismatches, which the extensive (GPU) mode cannot "
-                    "enumerate completely. Use the fast CPU mode "
-                    "(mode='fast'), which enumerates by score cutoff."
-                )
-            results_per_guide = min(results_per_guide * 16, _MAX_RESULTS_PER_GUIDE)
+            cap = (self.max_results_per_guide if self.max_results_per_guide is not None
+                   else _MAX_RESULTS_PER_GUIDE)
+            if results_per_guide >= cap:
+                # Ceiling reached: keep the deterministic genome-order prefix
+                # of hits instead of failing the whole search. The kernel
+                # counted every match exactly, so the true raw-hit count is
+                # known and logged; the affected guides are extreme
+                # multi-mappers that no off-target filter would pass anyway.
+                for sg in sorted(pending, key=lambda s: s.guide_seq):
+                    log.warning(
+                        "Truncated off-target enumeration for guide %s "
+                        "(PAM=%s): %d raw genome-wide hits exceed the "
+                        "per-strand buffer of %d; keeping the first %d "
+                        "(genome order). The off-target count for this "
+                        "guide is a lower bound.",
+                        sg.guide_seq, sg.pam, counts_combined[sg],
+                        results_per_guide, len(raw_combined[sg]),
+                    )
+                break
+            results_per_guide = min(results_per_guide * 16, cap)
             if log is not None:
                 names = ", ".join(sorted({sg.guide_seq for sg in pending})[:5])
                 log.warning(
@@ -558,7 +629,7 @@ class beguidedoff:
                     results_per_guide,
                 )
 
-        return raw_combined, overflow_combined
+        return raw_combined, overflow_combined, counts_combined
 
     def _scan_strands(
         self,
@@ -566,19 +637,20 @@ class beguidedoff:
         results_per_guide: int,
         log: Optional[logging.Logger],
         verbose: bool,
-    ) -> Tuple[Dict[_ScanGuide, List[dict]], Dict[_ScanGuide, bool]]:
+    ) -> Tuple[Dict[_ScanGuide, List[dict]], Dict[_ScanGuide, bool], Dict[_ScanGuide, int]]:
         """Run the kernel over both strands once with the given buffer size."""
         raw: Dict[_ScanGuide, List[dict]] = {sg: [] for sg in scan_guides}
         overflow: Dict[_ScanGuide, bool] = {sg: False for sg in scan_guides}
+        counts: Dict[_ScanGuide, int] = {sg: 0 for sg in scan_guides}
 
-        strands = [("+", self.genome_data["genome_forward"])]
+        strands = [("+", self.genome_data["genome_forward"], self._n_mask_fwd)]
         if "genome_rc" in self.genome_data:
-            strands.append(("-", self.genome_data["genome_rc"]))
+            strands.append(("-", self.genome_data["genome_rc"], self._n_mask_rc))
 
-        for strand_label, genome_packed in strands:
+        for strand_label, genome_packed, n_mask in strands:
             if verbose:
                 log.info("  GPU searching %s strand ...", strand_label)
-            strand_results, strand_overflow = _search_strand_cuda(
+            strand_results, strand_overflow, strand_counts = _search_strand_cuda(
                 genome_packed,
                 self.total_bp,
                 scan_guides,
@@ -587,11 +659,14 @@ class beguidedoff:
                 self.chrom_offsets,
                 self.chrom_lengths,
                 results_per_guide=results_per_guide,
+                n_mask_packed=n_mask,
             )
             for sg, hits in strand_results.items():
                 raw[sg].extend(hits)
             for sg, ovf in strand_overflow.items():
                 if ovf:
                     overflow[sg] = True
+            for sg, cnt in strand_counts.items():
+                counts[sg] += cnt
 
-        return raw, overflow
+        return raw, overflow, counts

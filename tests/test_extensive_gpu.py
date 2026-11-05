@@ -7,8 +7,10 @@ Covers the two scaling fixes:
   raising "Too many guides";
 * overflow re-scan — a guide whose <= max_mismatches matches exceed the
   per-guide raw-hit buffer is re-scanned with a larger buffer (exact
-  result), and the search fails loudly when even the maximum buffer is not
-  enough instead of returning a silently truncated hit list.
+  result); when even the maximum buffer is not enough the genome-order
+  prefix of hits is kept and the truncation is logged loudly (guides at
+  the ceiling are extreme multi-mappers that no off-target filter would
+  pass).
 
 These tests need a CUDA GPU; they skip elsewhere.
 """
@@ -82,16 +84,98 @@ class TestOverflowRescan:
         # ACGT-repeat guide has no <=4mm neighbours on the minus strand).
         assert row["n_offtargets_below_threshold"] == _N_COPIES
 
-    def test_cap_reached_fails_loudly(self, overflow_finder, monkeypatch):
+    def test_cap_reached_truncates_and_warns(self, overflow_finder, monkeypatch, caplog):
         """With the escalation ceiling at the initial buffer size, an
-        overflowing guide must raise instead of returning truncated hits."""
+        overflowing guide is truncated at the buffer (deterministic
+        genome-order prefix) and a warning with the exact raw-hit count is
+        logged instead of raising."""
+        import logging
+
         monkeypatch.setattr(
             finder_module, "_MAX_RESULTS_PER_GUIDE", finder_module._DEFAULT_RESULTS_PER_GUIDE
         )
-        with pytest.raises(RuntimeError, match="still exceed the raw-hit buffer"):
-            overflow_finder.search(
-                guides=_single_guide(), return_all=False, verbose=False
+        with caplog.at_level(logging.WARNING):
+            df = overflow_finder.search(
+                guides=_single_guide(), return_all=True, verbose=False
             )
+        # No exception: the recorded genome-order prefix is returned...
+        assert len(df) == finder_module._DEFAULT_RESULTS_PER_GUIDE
+        # ...and the truncation is logged loudly, with the exact count the
+        # kernel counted (all _N_COPIES planted (+)-strand sites).
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("Truncated off-target enumeration" in m for m in messages)
+        assert any(str(_N_COPIES) in m for m in messages)
+
+
+class TestNMaskGate:
+    """N positions are encoded as A in the 2-bit genome (T on the
+    reverse-complement strand). The kernel must skip candidate sites whose
+    26-bp window overlaps an N; without the gate, A/T-rich guides collect a
+    phantom hit at every N position of the assembly."""
+
+    @staticmethod
+    def _n_genome():
+        # Two real sites embedded in G flanks (G never matches A/T-rich
+        # guides), separated by a 500-bp N block:
+        #   poly-A guide (A20, PAM AAA): real (+)-strand site "A20+AAA",
+        #     real (-)-strand site = revcomp("T20+TTT") inside the rc genome;
+        #   poly-T guide (T20, PAM TTT): mirrored sites.
+        # Inside the N block both the guide window and the PAM are faked
+        # (N -> A on '+', N -> T on '-'), so without the gate each guide
+        # gains ~500 phantom hits at 0 mismatches.
+        return ("G" * 40 + "T" * 20 + "TTT" + "G" * 40
+                + "N" * 500
+                + "G" * 40 + "A" * 20 + "AAA" + "G" * 40)
+
+    @staticmethod
+    def _two_guides():
+        return [
+            GuideInput("polyA", "A" * 20, "AAA", "3prime", 4, 8, "CBE"),
+            GuideInput("polyT", "T" * 20, "TTT", "3prime", 4, 8, "CBE"),
+        ]
+
+    def test_n_overlapping_sites_are_excluded(self, tmp_path):
+        npz = _write_npz(tmp_path / "genome.fa", tmp_path / "genome.npz",
+                         self._n_genome())
+        finder = make_finder(genome_path=str(npz), max_mismatches=4,
+                             n_top_offtargets=3)
+        df = finder.search(guides=self._two_guides(), return_all=True,
+                           verbose=False)
+        assert not df.empty
+        n_start, n_end = 104, 603   # 1-based span of the 500-bp N block
+        for guide_seq, group in df.groupby("guide_rna_sequence"):
+            # Without the N gate each guide collects ~530 hits (phantom N
+            # hits + boundary straddlers); with it only the real sites and
+            # their <=4-mm neighbours in the G flanks remain.
+            assert len(group) < 15, f"phantom N hits for {guide_seq}"
+            # No hit may fall inside the N block.
+            assert not ((group["ot_chromosome"] == "chr1")
+                        & (group["ot_position"] >= n_start)
+                        & (group["ot_position"] <= n_end)).any()
+            # The planted real sites are found with 0 mismatches.
+            assert (group["n_mismatches"] == 0).any()
+
+    def test_genome_without_n_mask_still_searches(self, tmp_path):
+        """Backward compatibility: a genome encoded without an N mask
+        searches ungated (historical behaviour) and still finds sites."""
+        fa = tmp_path / "genome.fa"
+        npz = tmp_path / "genome.npz"
+        with open(fa, "w") as fh:
+            fh.write(">chr1\n")
+            genome = "G" * 40 + "A" * 20 + "AAA" + "G" * 40
+            for i in range(0, len(genome), 80):
+                fh.write(genome[i : i + 80] + "\n")
+        convert(str(fa), str(npz), include_n_mask=False, verbose=False)
+        finder = make_finder(genome_path=str(npz), max_mismatches=4,
+                             n_top_offtargets=3)
+        df = finder.search(
+            guides=[GuideInput("polyA", "A" * 20, "AAA", "3prime", 4, 8, "CBE")],
+            return_all=True, verbose=False,
+        )
+        # The homopolymer flank legitimately matches with <=4 mismatches;
+        # only assert the planted exact site is among the hits.
+        exact = df[(df["n_mismatches"] == 0)]
+        assert len(exact) >= 1
 
 
 class TestAutoChunking:

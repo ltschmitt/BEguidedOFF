@@ -20,6 +20,11 @@ the kernel scan at 78-97% of extensive-search wall time):
   rounds do not re-upload ~775 MB per strand.
 * Hit buffers are allocated without the redundant -1 fill (the host
   only reads the first `count` entries per guide).
+* An N-position bitmask (stored in the encoded genome by the converter)
+  gates every candidate: a site whose 26-bp window overlaps an unknown
+  base cannot be a real match, because N is encoded as A in the 2-bit
+  genome. Without the gate, A/T-rich guides collect millions of phantom
+  hits across the N gaps/centromeres of the assembly.
 """
 import math
 import logging
@@ -154,6 +159,8 @@ def encode_pam_packed(pam_masks, pam_lens, pam_3prime):
 @cuda.jit
 def search_chunk_kernel(
     genome_packed,       # uint32[:]
+    n_mask_packed,       # uint8[:]  packed N bitmask (bit i = genome position i,
+                         #           little bit order); empty -> no N gating
     total_bp,            # int
     guide_encoded,       # uint64[:]
     n_guides,            # int
@@ -198,6 +205,23 @@ def search_chunk_kernel(
     valid_end = total_bp - 26   # safe for any PAM up to 6
     if pos >= chunk_end or pos >= valid_end:
         return
+
+    # N gate: skip positions whose 26-bp site window (20-nt guide + up to
+    # 6-nt PAM; the union is [pos, pos+26) in both PAM layouts) overlaps an
+    # unknown (N) reference base. N bases are encoded as A in the 2-bit
+    # genome, so without this gate every N position masquerades as an A and
+    # A/T-rich guides accumulate millions of phantom "matches" across the
+    # ~160 Mbp of N in a typical mammalian genome assembly.
+    if n_mask_packed.shape[0] > 0:
+        b = pos >> 3
+        off = uint64(pos & 7)
+        w = (uint64(n_mask_packed[b])
+             | (uint64(n_mask_packed[b + 1]) << uint64(8))
+             | (uint64(n_mask_packed[b + 2]) << uint64(16))
+             | (uint64(n_mask_packed[b + 3]) << uint64(24))
+             | (uint64(n_mask_packed[b + 4]) << uint64(32)))
+        if (w >> off) & uint64(0x3FFFFFF):
+            return
 
     # Per-position extraction, hoisted out of the guide loop (3' layout)
     window3 = _pack_bits(genome_packed, pos, 40)
@@ -275,6 +299,45 @@ def _genome_to_device(genome_packed):
     return d_genome
 
 
+_N_MASK_DEVICE_CACHE = {}   # id(host_array) -> (host_array, device_array)
+
+
+def _n_mask_to_device(n_mask_packed):
+    """Upload the packed N bitmask once and reuse the device copy.
+
+    Same id()-keyed identity cache as ``_genome_to_device``: the mask is
+    ~390 MB for a mammalian genome and overflow re-scan rounds must not
+    re-upload it per call.
+    """
+    host = np.ascontiguousarray(n_mask_packed, dtype=np.uint8)
+    entry = _N_MASK_DEVICE_CACHE.get(id(host))
+    if entry is not None and entry[0] is host:
+        return entry[1]
+    d_mask = cuda.to_device(host)
+    if len(_N_MASK_DEVICE_CACHE) >= _GENOME_CACHE_LIMIT:
+        _N_MASK_DEVICE_CACHE.clear()
+    _N_MASK_DEVICE_CACHE[id(host)] = (host, d_mask)
+    return d_mask
+
+
+def _prepare_n_mask_device(n_mask_packed, total_bp):
+    """Validate/pad the N bitmask and upload it (empty array -> no gating).
+
+    The kernel reads bytes ``[pos >> 3, pos >> 3 + 4]`` for every position
+    below ``total_bp - 26``, so at least ``((total_bp - 27) >> 3) + 5``
+    bytes must exist; the host pads the packed mask accordingly.
+    """
+    if n_mask_packed is None:
+        return cuda.to_device(np.zeros(0, dtype=np.uint8))
+    host = np.ascontiguousarray(n_mask_packed, dtype=np.uint8)
+    if host.size == 0:
+        return cuda.to_device(host)
+    need = ((total_bp - 27) >> 3) + 5
+    if host.size < need:
+        host = np.pad(host, (0, need - host.size), constant_values=0)
+    return _n_mask_to_device(host)
+
+
 def search_genome_cuda(
     genome_packed,
     total_bp,
@@ -286,12 +349,17 @@ def search_genome_cuda(
     chunk_size=200_000_000,
     return_overflow=False,
     results_per_guide=_DEFAULT_RESULTS_PER_GUIDE,
+    n_mask_packed=None,
 ):
     """Host-side driver for the Numba CUDA search kernel.
 
     Returns:
         all_results: dict guide_idx -> list of (position, n_mismatches)
-        (if return_overflow=True): dict guide_idx -> bool (True if buffer was exceeded)
+        (if return_overflow=True): tuple of
+            dict guide_idx -> bool (True if buffer was exceeded),
+            dict guide_idx -> int (exact number of raw matches; the kernel
+            counts every match even beyond the recorded buffer, so this is
+            exact also for overflowing guides)
     """
     n_guides = len(guide_encoded)
     ng = int(n_guides)
@@ -306,6 +374,7 @@ def search_genome_cuda(
 
     # Device arrays
     d_genome = _genome_to_device(genome_packed)
+    d_n_mask = _prepare_n_mask_device(n_mask_packed, total_bp)
     d_guides = cuda.to_device(np.ascontiguousarray(guide_encoded, dtype=np.uint64))
 
     pam_masks_c = np.ascontiguousarray(pam_masks, dtype=np.uint8)
@@ -337,6 +406,7 @@ def search_genome_cuda(
 
         search_chunk_kernel[grid_size, block_size](
             d_genome,
+            d_n_mask,
             total_bp,
             d_guides,
             ng,
@@ -359,13 +429,15 @@ def search_genome_cuda(
     h_mismatches = d_hit_mismatches.copy_to_host()
 
     overflow = {}
+    hit_counts = {}
     for g in range(ng):
         cnt = int(h_counts[g])
         overflow[g] = cnt > results_per_guide
+        hit_counts[g] = cnt
         recorded = min(cnt, results_per_guide)
         for i in range(recorded):
             all_results[g].append((int(h_positions[g, i]), int(h_mismatches[g, i])))
 
     if return_overflow:
-        return all_results, overflow
+        return all_results, overflow, hit_counts
     return all_results
