@@ -126,6 +126,7 @@ def _search_strand_cuda(
     chrom_lengths: np.ndarray,
     results_per_guide: int = 10240,
     n_mask_packed: Optional[np.ndarray] = None,
+    n_encoded: int = 0,
 ) -> Tuple[dict, dict, dict]:
     """GPU search on one strand using Numba CUDA.
 
@@ -135,6 +136,10 @@ def _search_strand_cuda(
     the host-side decode of ``batch_size * results_per_guide`` hits stays
     bounded. Larger inputs are therefore split automatically instead of
     raising the historical "Too many guides" error.
+
+    ``n_encoded`` is the 2-bit value an N base encodes as on this strand
+    (0 = A on the forward-packed genome, 3 = T on the reverse complement);
+    it drives the mismatch correction for guide windows overlapping N.
 
     Returns (results_dict, overflow_dict, counts_dict).
     results_dict: scan_key -> list of raw hit dicts.
@@ -182,6 +187,7 @@ def _search_strand_cuda(
             return_overflow=True,
             results_per_guide=results_per_guide,
             n_mask_packed=n_mask_packed,
+            n_encoded=n_encoded,
         )
 
         for g_idx, sg in enumerate(batch):
@@ -660,6 +666,7 @@ class beguidedoff:
                 self.chrom_lengths,
                 results_per_guide=results_per_guide,
                 n_mask_packed=n_mask,
+                n_encoded=0 if strand_label == "+" else 3,
             )
             for sg, hits in strand_results.items():
                 raw[sg].extend(hits)

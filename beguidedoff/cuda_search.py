@@ -21,10 +21,14 @@ the kernel scan at 78-97% of extensive-search wall time):
 * Hit buffers are allocated without the redundant -1 fill (the host
   only reads the first `count` entries per guide).
 * An N-position bitmask (stored in the encoded genome by the converter)
-  gates every candidate: a site whose 26-bp window overlaps an unknown
-  base cannot be a real match, because N is encoded as A in the 2-bit
-  genome. Without the gate, A/T-rich guides collect millions of phantom
-  hits across the N gaps/centromeres of the assembly.
+  corrects the mismatch count at every hit: N is encoded as A in the 2-bit
+  genome, so guide positions expecting A would falsely match an N — those
+  positions count as mismatches instead (Cas-OFFinder semantics: an N in
+  the guide window never matches). A hoisted 26-bp mask test skips the
+  per-guide correction wherever the whole union window (guide + longest
+  PAM) is N-free. The PAM region is not corrected — PAM mismatches are
+  ignored by both engines, and a fixed PAM position can never falsely
+  match the A that an N encodes as.
 """
 import math
 import logging
@@ -171,6 +175,8 @@ def search_chunk_kernel(
     chunk_start,         # int  – offset into genome for this chunk
     chunk_end,           # int  – exclusive bound for this chunk
     results_per_guide,   # int
+    n_encoded,           # int  – 2-bit value an N encodes as on this strand
+                         #           (0 = A on '+', 3 = T on '-')
 
     # Output
     d_hit_counts,        # int32[:]  per-guide hit counter
@@ -206,12 +212,20 @@ def search_chunk_kernel(
     if pos >= chunk_end or pos >= valid_end:
         return
 
-    # N gate: skip positions whose 26-bp site window (20-nt guide + up to
-    # 6-nt PAM; the union is [pos, pos+26) in both PAM layouts) overlaps an
-    # unknown (N) reference base. N bases are encoded as A in the 2-bit
-    # genome, so without this gate every N position masquerades as an A and
-    # A/T-rich guides accumulate millions of phantom "matches" across the
-    # ~160 Mbp of N in a typical mammalian genome assembly.
+    # N gate, fast path: if the whole 26-bp union window (20-nt guide + up
+    # to 6-nt PAM) is free of unknown bases, no guide at this position can
+    # overlap an N and the per-guide correction below is skipped. N bases
+    # are encoded as A in the 2-bit genome, so without gating every N
+    # position masquerades as an A and A/T-rich guides accumulate millions
+    # of phantom "matches" across the ~160 Mbp of N in a typical mammalian
+    # genome assembly.
+    #
+    # The per-guide correction (below) covers only the 20-nt guide window:
+    # a fixed PAM position can never falsely match the A that an N encodes
+    # as, and PAM mismatches are ignored anyway. Correcting (rather than
+    # gating) the guide window keeps Cas-OFFinder semantics: an N never
+    # matches, it counts as a mismatch.
+    need_n_check = False
     if n_mask_packed.shape[0] > 0:
         b = pos >> 3
         off = uint64(pos & 7)
@@ -220,9 +234,7 @@ def search_chunk_kernel(
              | (uint64(n_mask_packed[b + 2]) << uint64(16))
              | (uint64(n_mask_packed[b + 3]) << uint64(24))
              | (uint64(n_mask_packed[b + 4]) << uint64(32)))
-        if (w >> off) & uint64(0x3FFFFFF):
-            return
-
+        need_n_check = ((w >> off) & uint64(0x3FFFFFF)) != uint64(0)
     # Per-position extraction, hoisted out of the guide loop (3' layout)
     window3 = _pack_bits(genome_packed, pos, 40)
     pam6 = _pack_bits(genome_packed, pos + 20, 12)
@@ -265,11 +277,41 @@ def search_chunk_kernel(
         if n_mm > max_mismatches:
             continue
 
+        # N handling (only at positions near an N): a reference N encodes as
+        # `n_encoded` on this strand (A on '+', T on '-'), so guide positions
+        # expecting that base falsely match. Cas-OFFinder semantics: an N in
+        # the guide window never matches — it counts as a mismatch. Add the
+        # falsely-matching N positions to the mismatch count and reject the
+        # hit if it then exceeds the budget. (Positions where the guide base
+        # differs from `n_encoded` already mismatched in the raw count and
+        # must not be double-counted.) The PAM region is not corrected: PAM
+        # mismatches are ignored by both engines, and a fixed PAM position
+        # whose requirement differs from `n_encoded` can never falsely match.
+        n_mm_final = n_mm
+        if need_n_check:
+            gb = guide_start >> 3
+            goff = uint64(guide_start & 7)
+            gw = (uint64(n_mask_packed[gb])
+                  | (uint64(n_mask_packed[gb + 1]) << uint64(8))
+                  | (uint64(n_mask_packed[gb + 2]) << uint64(16))
+                  | (uint64(n_mask_packed[gb + 3]) << uint64(24))
+                  | (uint64(n_mask_packed[gb + 4]) << uint64(32)))
+            gw_bits = (gw >> goff) & uint64(0xFFFFF)   # 20 guide-window bits
+            if gw_bits != uint64(0):
+                extra = 0
+                for i in range(20):
+                    if (gw_bits >> uint64(i)) & uint64(1):
+                        if (s_guides[g] >> uint64(2 * i)) & uint64(3) == uint64(n_encoded):
+                            extra += 1          # guide expects the N-encoded base
+                n_mm_final = n_mm + extra
+                if n_mm_final > max_mismatches:
+                    continue
+
         # Store hit atomically (host code filters on-target at provided coordinates)
         idx = cuda.atomic.add(d_hit_counts, g, int32(1))
         if idx < results_per_guide:
             d_hit_positions[g, idx] = pos
-            d_hit_mismatches[g, idx] = int8(n_mm)
+            d_hit_mismatches[g, idx] = int8(n_mm_final)
 
 
 # ---------------------------------------------------------------------------
@@ -323,16 +365,17 @@ def _n_mask_to_device(n_mask_packed):
 def _prepare_n_mask_device(n_mask_packed, total_bp):
     """Validate/pad the N bitmask and upload it (empty array -> no gating).
 
-    The kernel reads bytes ``[pos >> 3, pos >> 3 + 4]`` for every position
-    below ``total_bp - 26``, so at least ``((total_bp - 27) >> 3) + 5``
-    bytes must exist; the host pads the packed mask accordingly.
+    The kernel reads bytes ``[p >> 3, p >> 3 + 4]`` for p up to the last
+    guide-window start (``total_bp - 27 + 6`` for a 6-nt 5' PAM), so at
+    least ``(total_bp >> 3) + 8`` bytes must exist; the host pads the
+    packed mask accordingly.
     """
     if n_mask_packed is None:
         return cuda.to_device(np.zeros(0, dtype=np.uint8))
     host = np.ascontiguousarray(n_mask_packed, dtype=np.uint8)
     if host.size == 0:
         return cuda.to_device(host)
-    need = ((total_bp - 27) >> 3) + 5
+    need = (total_bp >> 3) + 8
     if host.size < need:
         host = np.pad(host, (0, need - host.size), constant_values=0)
     return _n_mask_to_device(host)
@@ -350,6 +393,7 @@ def search_genome_cuda(
     return_overflow=False,
     results_per_guide=_DEFAULT_RESULTS_PER_GUIDE,
     n_mask_packed=None,
+    n_encoded=0,
 ):
     """Host-side driver for the Numba CUDA search kernel.
 
@@ -417,6 +461,7 @@ def search_genome_cuda(
             chunk_start,
             chunk_end,
             results_per_guide,
+            n_encoded,
             d_hit_counts,
             d_hit_positions,
             d_hit_mismatches,

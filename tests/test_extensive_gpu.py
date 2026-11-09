@@ -155,6 +155,32 @@ class TestNMaskGate:
             # The planted real sites are found with 0 mismatches.
             assert (group["n_mismatches"] == 0).any()
 
+    def test_site_adjacent_to_n_run_is_kept(self, tmp_path):
+        """Regression: a minus-strand NGG site whose forward window starts
+        3 bp after an N run must be found. The gate must cover only the
+        20-nt guide window — over-extending into the PAM/flank (as a fixed
+        26-bp check does for short PAMs) wrongly drops real sites next to
+        N stretches."""
+        genome = "G" * 30 + "N" * 10 + "CCC" + "T" * 20 + "G" * 30
+        npz = _write_npz(tmp_path / "genome.fa", tmp_path / "genome.npz", genome)
+        finder = make_finder(genome_path=str(npz), max_mismatches=4,
+                             n_top_offtargets=3)
+        df = finder.search(
+            guides=[GuideInput("polyA", "A" * 20, "NGG", "3prime", 4, 8, "CBE")],
+            return_all=True, verbose=False,
+        )
+        # The minus-strand site (forward CCC+T20 = revcomp of A20+NGG) and
+        # its 1-mm neighbour (guide window shifted by one, PAM AGG) are the
+        # only possible hits; the plus strand cannot match poly-A vs T20.
+        # Both guide windows ([43,63) and [44,64)) clear the N block, so the
+        # old fixed-26-bp gate — which over-checked into the N run — dropped
+        # them both.
+        assert len(df) == 2
+        assert (df["ot_strand"] == "-").all()
+        zero_mm = df[df["n_mismatches"] == 0]
+        assert len(zero_mm) == 1
+        assert zero_mm.iloc[0]["ot_sequence"] == "A" * 20
+
     def test_genome_without_n_mask_still_searches(self, tmp_path):
         """Backward compatibility: a genome encoded without an N mask
         searches ungated (historical behaviour) and still finds sites."""
