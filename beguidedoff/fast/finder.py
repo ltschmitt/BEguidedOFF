@@ -223,6 +223,33 @@ class beguidedofffast:
                     continue
 
                 mm = _mismatch_positions(guide_seq, site_guide)
+
+                # N semantics (mirror the extensive mode / Cas-OFFinder):
+                # a reference N never matches. The FM-index alphabet has no
+                # fifth symbol, so non-ACGT bases are indexed as A; on the
+                # forward strand a guide A at an N position therefore scores
+                # as a match, and on the reverse-complement strand (after
+                # revcomp of the A-encoded window) a guide T does. Count
+                # those falsely-matching N positions as extra mismatches
+                # and drop the candidate when the corrected score exceeds
+                # the cutoff. Positions where the guide base differs from
+                # the N-encoded symbol already mismatched and must not be
+                # double-counted. Indices built before the N-run sidecar
+                # existed have no mask and keep the historical behaviour.
+                g_start = leftmost if strand == "+" else leftmost + pam_len
+                n_mask = self._index.n_in_range(g_start, _GUIDE_LENGTH)
+                if n_mask is not None and n_mask.any():
+                    g_upper = guide_seq.upper()
+                    n_symbol = "A" if strand == "+" else "T"
+                    extra = [
+                        i + 1
+                        for i in range(_GUIDE_LENGTH)
+                        if (n_mask[i] if strand == "+" else n_mask[_GUIDE_LENGTH - 1 - i])
+                        and g_upper[i] == n_symbol
+                    ]
+                    if extra:
+                        mm = sorted(set(mm).union(extra))
+
                 score = calculate_cctop_score(mm)
                 if score > cutoff:
                     continue

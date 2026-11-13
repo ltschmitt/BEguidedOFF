@@ -77,6 +77,17 @@ def bruteforce_hits(
         if not _pam_ok(p, pam):
             return
         mm = mismatch_positions_2bit(gval, encode_guide_64bit(encode_dna(w)), length=_GUIDE_LENGTH)
+        # N semantics (mirror the fast finder / extensive mode): a reference
+        # N never matches. encode_dna maps N to A, so a guide A at an N
+        # position would falsely score as a match — count it as a mismatch.
+        if "N" in w.upper():
+            extra = [
+                i + 1
+                for i, (gb, wb) in enumerate(zip(guide_seq.upper(), w.upper()))
+                if wb == "N" and gb == "A"
+            ]
+            if extra:
+                mm = sorted(set(mm).union(extra))
         score = calculate_cctop_score(mm)
         if score > cutoff:
             return

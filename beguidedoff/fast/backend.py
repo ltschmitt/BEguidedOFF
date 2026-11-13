@@ -18,9 +18,13 @@ import numpy as np
 # --- symbol codec -----------------------------------------------------------
 #
 # The index alphabet is 1..4 for A/C/G/T plus a separator symbol.  Anything that
-# is not A/C/G/T is mapped to A -- this deliberately mirrors the 2-bit genome
-# encoding used by the extensive mode (``NUC_TO_2BIT.get(base, 0)``), so that the
-# two modes agree on genomes that contain N / soft-masked bases.
+# is not A/C/G/T is mapped to A, mirroring how the 2-bit genome encoding used by
+# the extensive mode (``NUC_TO_2BIT.get(base, 0)``) treats non-ACGT bases.
+# Because the alphabet has no fifth symbol, N information is not stored in the
+# index itself: ``build_index`` writes an N-run sidecar (``<index>.nmask``) and
+# the finder applies the extensive mode's N semantics (a reference N never
+# matches) during candidate verification.  Indices built before the sidecar
+# existed search without it (historical behaviour).
 SEPARATOR = 6
 
 _ENCODE = bytearray([1]) * 256  # default: A

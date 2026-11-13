@@ -47,6 +47,36 @@ Extensive enumerated 65,752 sites with score ≤ 5 where fast enumerated 205,684
 
 Both engines enumerate 205,684 score ≤ 5 sites. Several guides needed the second escalation tier (>163 840 raw ≤4-mm hits each). The cost is runtime only — the complete enumeration is CPU-bound scoring work the truncated search used to skip. A guide that still overflows at the ceiling fails with a clear error instead of returning silent truncations.
 
+## Phase 0b — N-semantics fix (2026-11-13) and re-validation
+
+The extensive mode now applies Cas-OFFinder N semantics: a reference N inside
+the 20-nt guide window never matches — it counts as a mismatch (strand-aware,
+since the 2-bit encoding presents N as A on the forward genome and as T on the
+reverse complement). This removed millions of phantom matches for A/T-rich
+guides (the N-as-A artefact of the 2-bit encoding) and brought the extensive
+engine to 100.0 % concordance with Cas-OFFinder v2.4.1 (1,243,721 hits, three
+PAM families; see `casoffinder_rerun_report.json`).
+
+The fast (FM-index) mode received the same rule. The index alphabet has no
+fifth symbol, so `build_index` now writes an N-run sidecar
+(`<index>.nmask`, a few KB of N start/end runs) and the finder counts a guide
+base that equals the N-decoded symbol (A on '+', T on '−') as a mismatch.
+Indices built before the sidecar search ungated (historical behaviour).
+
+Re-validation with the sidecar index (`run_bench.py correctness`):
+
+| check | set=100 (mixed) | set=overflow (24 A/T-rich guides) |
+|---|---|---|
+| verdict mismatches | 0 | 0 |
+| hit-set mismatches (score ≤ 5) | 0 | 0 |
+| `n_offtargets_below_threshold` mismatches | 0 | 0 |
+| top-3 mismatches | 0 | 0 |
+| hits ≤ 5 (both engines) | 78 | 205,684 |
+| extensive / fast search | 18.7 s / 1.3 s | 1,431.7 s / 8.1 s |
+
+Fast and extensive agree exactly on the real genome, including on the
+repeat-rich guides whose raw hit lists exceed every buffer tier.
+
 ## Phase 1 — search latency (top-3 output, count threshold 3)
 
 | guide set | input rows | unique scans | extensive (GPU) | fast (CPU, 24c) | fast (CPU, 4c) | speedup (4c) |
