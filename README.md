@@ -9,6 +9,11 @@ Two search modes share one API:
 - **extensive** (GPU brute force via Numba CUDA) — exhaustive scan for every site with ≤ `max_mismatches`.
 - **fast** (CPU FM-index) — a sound filter at a CCTOP score cutoff; same remove/keep verdicts without a GPU, for web/service use.
 
+## Related repositories
+
+- [BEguided](https://github.com/ltschmitt/BEguided) — the guide-RNA design pipeline; BEguidedOFF is its off-target search backend but also runs standalone on any guide set.
+- [BEguided-datasets](https://github.com/ltschmitt/BEguided-datasets) — ready-to-use mutation target lists (COSMIC, ClinVar, cBioPortal), run configs, and the pre-computed guide sets behind the preprint.
+
 ---
 
 ## What it does
