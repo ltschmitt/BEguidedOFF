@@ -19,6 +19,7 @@ dist/
 *.so
 *.fmi
 *.fmi.meta
+*.fmi.nmask
 *.seq.tmp
 *.sdsl
 beguidedoff_cache_*
