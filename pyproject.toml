@@ -68,7 +68,11 @@ pybind11 = ">=3.1.0,<4"
 # workspaces (and `pixi global install`) can consume it straight from GitHub:
 #
 #     pixi add --git https://github.com/ltschmitt/BEguidedOFF.git beguidedoff
-#     pixi global install --git https://github.com/ltschmitt/BEguidedOFF.git
+#     pixi global install --channel conda-forge --channel bioconda \
+#         --git https://github.com/ltschmitt/BEguidedOFF.git
+#
+# (bioconda is required for pysam; global environments default to
+# conda-forge only.)
 #
 # This is the piece that makes off-target search work outside the BEguided
 # checkout: the C++ FM-index binding (`beguidedoff._fmindex`) is built here

@@ -41,7 +41,14 @@ preview = ["pixi-build"]
 beguidedoff = { git = "https://github.com/ltschmitt/BEguidedOFF.git" }
 ```
 
-or `pixi add --git https://github.com/ltschmitt/BEguidedOFF.git beguidedoff`. For the GPU (`extensive`) mode add a CUDA-enabled PyTorch from conda-forge (`pytorch-gpu`), `numba` and `cuda-nvvm`, and declare `__cuda` in the workspace platforms (`platforms = [{ platform = "linux-64", __cuda = "12" }]`) — pixi's solver only sees the driver that way; see BEguided's [installation docs](https://github.com/ltschmitt/BEguided/blob/main/docs/installation.md#gpu-extensive-mode-in-your-own-workspace). Note the FM-index binding is built for a single CPython ABI; the recipe caps the build at CPython < 3.15 until bioconda ships py3.15 `pysam` builds.
+or `pixi add --git https://github.com/ltschmitt/BEguidedOFF.git beguidedoff`. Globally, with both entry points on your `PATH` (bioconda is required for `pysam` — global environments default to conda-forge only):
+
+```bash
+pixi global install --channel conda-forge --channel bioconda \
+    --git https://github.com/ltschmitt/BEguidedOFF.git
+```
+
+For the GPU (`extensive`) mode add a CUDA-enabled PyTorch from conda-forge (`pytorch-gpu`), `numba` and `cuda-nvvm`, and declare `__cuda` in the workspace platforms (`platforms = [{ platform = "linux-64", __cuda = "12" }]`) — pixi's solver only sees the driver that way; see BEguided's [installation docs](https://github.com/ltschmitt/BEguided/blob/main/docs/installation.md#gpu-extensive-mode-in-your-own-workspace). Note the FM-index binding is built for a single CPython ABI; the recipe caps the build at CPython < 3.15 until bioconda ships py3.15 `pysam` builds.
 
 ---
 
