@@ -27,6 +27,22 @@ Given a set of base editing guide RNAs, BEguidedOFF will:
 
 All commands below run inside the [`pixi`](https://pixi.sh) environment: `pixi install` once, then `pixi run <command>` (or `pixi shell`).
 
+### Install from Git into any Pixi workspace (no clone)
+
+The repo doubles as a pixi **source package** (pixi ≥ 0.81, `pixi-build` preview feature). Pixi builds the C++ FM-index extension against conda's `sdsl-lite` on your machine — no manual build steps:
+
+```toml
+[tool.pixi.workspace]
+channels = ["conda-forge", "bioconda"]
+platforms = ["linux-64"]
+preview = ["pixi-build"]
+
+[tool.pixi.dependencies]
+beguidedoff = { git = "https://github.com/ltschmitt/BEguidedOFF.git" }
+```
+
+or `pixi add --git https://github.com/ltschmitt/BEguidedOFF.git beguidedoff`. For the GPU (`extensive`) mode add a CUDA-enabled PyTorch from conda-forge (`pytorch-gpu`), `numba` and `cuda-nvvm`, and declare `__cuda` in the workspace platforms (`platforms = [{ platform = "linux-64", __cuda = "12" }]`) — pixi's solver only sees the driver that way; see BEguided's [installation docs](https://github.com/ltschmitt/BEguided/blob/main/docs/installation.md#gpu-extensive-mode-in-your-own-workspace). Note the FM-index binding is built for a single CPython ABI; the recipe caps the build at CPython < 3.15 until bioconda ships py3.15 `pysam` builds.
+
 ---
 
 ## Input File Format

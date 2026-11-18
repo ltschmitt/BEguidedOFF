@@ -1,0 +1,31 @@
+name: gitleaks
+
+# Scan every push and pull request for committed secrets, over the full
+# commit history. Mirrors the setup in the BEguided repo.
+#
+# The gitleaks GitHub Action is free for personal accounts. If this repo is
+# ever moved into an organisation, set a GITLEAKS_LICENSE repository secret
+# (see https://github.com/gitleaks/gitleaks-action#-gitleaks-license).
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Scan for secrets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

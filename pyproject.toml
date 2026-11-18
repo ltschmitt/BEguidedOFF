@@ -47,6 +47,7 @@ beguidedoff = "beguidedoff.cli:main"
 [tool.pixi.workspace]
 channels = ["pytorch", "conda-forge", "bioconda"]
 platforms = ["linux-64"]
+preview = ["pixi-build"]
 
 [tool.pixi.dependencies]
 numpy = ">=2.4.6,<3"
@@ -60,5 +61,56 @@ numba = ">=0.65.1,<0.66"
 sdsl-lite = ">=2.1.1,<3"
 pybind11 = ">=3.1.0,<4"
 
+# ---------------------------------------------------------------------------
+# Pixi package recipe (pixi-build — preview feature)
+# ---------------------------------------------------------------------------
+# Makes this repository installable as a conda source package, so other pixi
+# workspaces (and `pixi global install`) can consume it straight from GitHub:
+#
+#     pixi add --git https://github.com/ltschmitt/BEguidedOFF.git beguidedoff
+#     pixi global install --git https://github.com/ltschmitt/BEguidedOFF.git
+#
+# This is the piece that makes off-target search work outside the BEguided
+# checkout: the C++ FM-index binding (`beguidedoff._fmindex`) is built here
+# against conda's sdsl-lite, so consumers need no build scaffolding of their
+# own. Name/version and the run dependencies (numpy, pandas, pysam) come from
+# [project] via `ignore-pypi-mapping = false`; setuptools/pybind11 host deps
+# come from [build-system] the same way.
+#
+# The optional CUDA kernel extension (csrc/) is never built — same policy as
+# the pip/git install: BEGUIDEDOFF_CUDA=0 makes the skip deterministic even
+# on hosts where nvcc is visible. `extensive` mode needs no compiled kernel;
+# it uses torch brute force, which consumers add themselves (a CUDA-enabled
+# pytorch from conda-forge — `pytorch-gpu` — plus numba; see BEguided's
+# installation docs). The CFLAGS define pins the C++11 ABI so the
+# binding always matches conda-forge's libsdsl, regardless of any inherited
+# compiler default.
+#
+# `pypi-conda-map` is needed for pysam: the automatic PyPI→conda mapping only
+# knows conda-forge names, but pysam lives on bioconda (same name).
+[tool.pixi.package.build]
+backend = { name = "pixi-build-python", version = "0.*", channels = [
+    "https://prefix.dev/pixi-build-backends",
+    "https://prefix.dev/conda-forge",
+] }
+config = { ignore-pypi-mapping = false, pypi-conda-map = { pysam = "pysam" }, compilers = ["c", "cxx"], env = { BEGUIDEDOFF_CUDA = "0", CFLAGS = "-D_GLIBCXX_USE_CXX11_ABI=1" } }
+
+# Build-time inputs that are not in [build-system]: setup.py discovers the
+# sdsl headers/library via sys.prefix (the conda host prefix), and zlib is
+# the link-time library. Their run-exports give the built package the
+# runtime libraries (libsdsl, libzlib) automatically.
+#
+# The python ceiling matters: the FM-index binding is a CPython-ABI-specific
+# extension (`.cp3XX-...so`), so the build python becomes the package's
+# python (via a python_abi pin). Bioconda's pysam builds currently stop at
+# CPython 3.14, so a build on 3.15 would produce a package that can never
+# coexist with pysam. Cap at <3.15 and bump when bioconda ships newer
+# CPython builds of pysam.
+[tool.pixi.package.host-dependencies]
+python = ">=3.10,<3.15"
+sdsl-lite = ">=2.1.1,<3"
+zlib = "*"
+
 [tool.pixi.tasks]
 beguidedoff = "python -m beguidedoff.cli"
+test = "python -m pytest tests/ -v"
